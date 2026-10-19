@@ -1,0 +1,33 @@
+# Compiled binaries and executables
+/bin/
+*.exe
+*.exe;
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go build / test cache
+.cache/
+
+# Database files (SQLite)
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# IDE / Editor specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment / Local config files
+.env
+*.local
+
+# Logs
+*.log
