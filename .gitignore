@@ -1,33 +1,59 @@
-# Compiled binaries and executables
+# Go build artifacts
 /bin/
+/build/
+/dist/
 *.exe
-*.exe;
+*.exe~
 *.dll
 *.so
 *.dylib
 *.test
 *.out
 
-# Go build / test cache
-.cache/
+# Test coverage and profiling
+/coverage/
+coverage.txt
+coverage.out
+*.coverprofile
+*.prof
+*.pprof
 
-# Database files (SQLite)
+# Generated pipeline output and temporary files
+/output/
+/outputs/
+/exports/
+/results/
+/tmp/
+/temp/
+*.tmp
+
+# Local databases
 *.db
-*.db-journal
+*.db-*
 *.sqlite
 *.sqlite3
+*.sqlite3-*
 
-# IDE / Editor specific files
+# Environment variables
+.env
+.env.*
+!.env.example
+!.env.sample
+*.local
+
+# Logs
+*.log
+/logs/
+
+# IDE and editor files
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 .DS_Store
+Thumbs.db
 
-# Environment / Local config files
-.env
-*.local
-
-# Logs
-*.log
+# Local caches
+.cache/
+*.txt
