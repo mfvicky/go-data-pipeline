@@ -7,7 +7,7 @@ import (
 )
 
 // ValidateJobSpec checks configuration structure, not business/record validity
-// (which belongs to the Day 2 validation stage).
+// (which belongs to the validation stage).
 func ValidateJobSpec(spec JobSpec) error {
 	if len(spec.Sources) == 0 {
 		return fmt.Errorf("sources must contain at least one source")

@@ -77,7 +77,7 @@ func TestJobAPI_CRUD(t *testing.T) {
 		t.Fatalf("unexpected details: %+v", details)
 	}
 	if details.Status.StartTime != nil || details.Status.RecordsProcessed != 0 {
-		t.Fatal("Day 1 should not execute pipeline jobs")
+		t.Fatal("should not execute pipeline jobs")
 	}
 	listed := testRequest(t, mux, "GET", "/api/v1/pipelines", "")
 	if listed.Code != http.StatusOK || !bytes.Contains(listed.Body.Bytes(), []byte(`"count":1`)) {

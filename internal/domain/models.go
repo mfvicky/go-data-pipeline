@@ -23,7 +23,7 @@ type SourceConfig struct {
 	Headers    map[string]string `json:"headers,omitempty"`
 }
 
-// AggregationConfig is consumed by the aggregation stage (scheduled for Day 3).
+// AggregationConfig is consumed by the aggregation stage.
 // Operations are count, sum, or avg; GroupBy optionally partitions the result.
 type AggregationConfig struct {
 	Name      string   `json:"name"`
@@ -32,7 +32,7 @@ type AggregationConfig struct {
 	GroupBy   []string `json:"group_by,omitempty"`
 }
 
-// ExportConfig describes a file output (implemented in Day 3).
+// ExportConfig describes a file output.
 type ExportConfig struct {
 	Type string `json:"type"` // csv, json
 	Path string `json:"path"`
@@ -52,7 +52,7 @@ type JobSpec struct {
 }
 
 // JobStatus is a snapshot of a job's execution state.
-// StartTime stays nil until a runner actually starts the job (Day 2).
+// StartTime stays nil until a runner actually starts the job.
 type JobStatus struct {
 	JobID            string     `json:"job_id"`
 	State            JobState   `json:"state"`

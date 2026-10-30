@@ -1,4 +1,3 @@
-// Command ingest-demo exercises the Day 1 readers without starting a job.
 package main
 
 import (
@@ -19,8 +18,12 @@ func main() {
 	endpoint := flag.String("endpoint", "testdata/input/customers.csv", "local file path or HTTP(S) URL")
 	name := flag.String("name", "demo", "source name")
 	recordPath := flag.String("record-path", "", "optional nested JSON record path, e.g. data.records")
+	timeout := flag.Duration("timeout", 60*time.Second, "max time to load source (e.g. 60s)")
 	flag.Parse()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	if *timeout <= 0 {
+		log.Fatal("-timeout must be greater than zero")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 	records, err := ingestion.Read(ctx, domain.SourceConfig{
 		Name: *name, Type: *kind, Endpoint: *endpoint, RecordPath: *recordPath,

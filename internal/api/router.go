@@ -6,7 +6,7 @@ import (
 	"github.com/mfvicky/go-data-pipeline/internal/repository"
 )
 
-// NewRouter registers the Day 1 API. Progress/results/errors/cancel will be
+// NewRouter registers the API. Progress/results/errors/cancel will be
 // added when the pipeline runner and observability are implemented.
 func NewRouter(repo *repository.JobRepository) http.Handler {
 	h := &handler{repo: repo}

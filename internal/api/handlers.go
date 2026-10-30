@@ -79,7 +79,7 @@ func (h *handler) create(w http.ResponseWriter, r *http.Request) {
 		JobID   string          `json:"job_id"`
 		State   domain.JobState `json:"state"`
 		Message string          `json:"message"`
-	}{JobID: id, State: domain.StatePending, Message: "Job saved; pipeline execution is not implemented in Day 1"})
+	}{JobID: id, State: domain.StatePending, Message: "Job saved; pipeline execution is not implemented"})
 }
 
 func (h *handler) list(w http.ResponseWriter, _ *http.Request) {

@@ -13,9 +13,9 @@ import (
 	"github.com/mfvicky/go-data-pipeline/internal/domain"
 )
 
-const maxSourceBytes int64 = 20 << 20 // 20 MiB per source in Day 1
+const maxSourceBytes int64 = 20 << 20 // 20 MiB per source
 
-var client = &http.Client{Timeout: 15 * time.Second}
+var client = &http.Client{Timeout: 60 * time.Second}
 
 // ReadAPI fetches a JSON HTTP API with a context-bound GET request.
 func ReadAPI(ctx context.Context, source domain.SourceConfig) ([]domain.Record, error) {

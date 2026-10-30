@@ -1,5 +1,5 @@
 // Package ingestion reads local/remote CSV, JSON, and JSON HTTP API sources.
-// Day 1 exposes a slice-based Read API; Day 2's runner can fan out one Read
+// exposes a slice-based Read API; runner can fan out one Read
 // per source and send returned typed records into the pipeline's channel.
 package ingestion
 
@@ -35,7 +35,7 @@ func Read(ctx context.Context, source domain.SourceConfig) ([]domain.Record, err
 	}
 }
 
-// SendToChannel bridges Day 1 readers into the typed channel interface needed
+// SendToChannel bridges readers into the typed channel interface needed
 // by the later pipeline runner. The caller owns/should close out, not this func.
 func SendToChannel(ctx context.Context, source domain.SourceConfig, out chan<- domain.Record) (int, error) {
 	records, err := Read(ctx, source)
