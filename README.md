@@ -18,6 +18,9 @@ go vet ./...
 
 # test
 go test ./... -v
+# or 
+#selected test
+go test ./internal/pipeline/ -v -count=1
 
 export PATH="/c/msys64/ucrt64/bin:$PATH"
 export CGO_ENABLED=1
