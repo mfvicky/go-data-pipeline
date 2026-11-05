@@ -61,7 +61,7 @@ func loadSource(ctx context.Context, source domain.SourceConfig, accept string, 
 		}
 		stream = file
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	data, err := io.ReadAll(io.LimitReader(stream, maxSourceBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read source: %w", err)

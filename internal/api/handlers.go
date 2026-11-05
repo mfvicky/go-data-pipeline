@@ -44,7 +44,7 @@ func (h *handler) create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	var spec domain.JobSpec

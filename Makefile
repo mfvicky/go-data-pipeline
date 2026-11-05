@@ -7,7 +7,8 @@ GOLANGCI_LINT ?= golangci-lint
 ifeq ($(shell $(GO) env GOOS),windows)
 GO_TMP := $(shell cygpath -m "$(HOME)/go-tmp")
 GO_CACHE := $(shell cygpath -m "$(HOME)/go-cache")
-GO_ENV := GOTMPDIR="$(GO_TMP)" GOCACHE="$(GO_CACHE)" TEMP="$(GO_TMP)" TMP="$(GO_TMP)"
+LINT_CACHE := $(shell cygpath -m "$(HOME)/golangci-lint-cache")
+GO_ENV := GOTMPDIR="$(GO_TMP)" GOCACHE="$(GO_CACHE)" TEMP="$(GO_TMP)" TMP="$(GO_TMP)" GOLANGCI_LINT_CACHE="$(LINT_CACHE)"
 else
 GO_ENV :=
 endif

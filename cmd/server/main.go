@@ -30,8 +30,8 @@ func main() {
 		if err != nil {
 			os.Exit(1)
 		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
+		statusOK := resp.StatusCode == http.StatusOK
+		if err := resp.Body.Close(); err != nil || !statusOK {
 			os.Exit(1)
 		}
 		return
