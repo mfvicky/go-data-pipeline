@@ -1,4 +1,3 @@
-# Go build artifacts
 /bin/
 /build/
 /dist/
@@ -9,43 +8,32 @@
 *.dylib
 *.test
 *.out
-
-# Test coverage and profiling
 /coverage/
 coverage.txt
 coverage.out
 *.coverprofile
 *.prof
 *.pprof
-
-# Generated pipeline output and temporary files
 /output/
 /outputs/
 /exports/
 /results/
+**/output/
 /tmp/
 /temp/
 *.tmp
-
-# Local databases
 *.db
 *.db-*
 *.sqlite
 *.sqlite3
 *.sqlite3-*
-
-# Environment variables
 .env
 .env.*
 !.env.example
 !.env.sample
 *.local
-
-# Logs
 *.log
 /logs/
-
-# IDE and editor files
 .vscode/
 .idea/
 *.swp
@@ -53,7 +41,5 @@ coverage.out
 *~
 .DS_Store
 Thumbs.db
-
-# Local caches
 .cache/
-*.txt
+/post.txt

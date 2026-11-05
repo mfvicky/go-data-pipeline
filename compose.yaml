@@ -1,0 +1,22 @@
+services:
+  api:
+    build: .
+    image: go-data-pipeline:local
+    ports:
+      - "127.0.0.1:${PORT:-8080}:8080"
+    environment:
+      APP_ENV: production
+      HOST: 0.0.0.0
+      PORT: "8080"
+      API_KEY: ${API_KEY:?Set API_KEY in your .env file}
+      INPUT_DIR: /app/testdata/input
+      ALLOW_PRIVATE_SOURCES: "false"
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-120}
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped

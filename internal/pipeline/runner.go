@@ -35,7 +35,7 @@ func Run(ctx context.Context, jobID string, spec domain.JobSpec) (RunResult, err
 	}
 	defer cancel()
 
-	channels := NewChannels(16)
+	channels := NewChannels(DefaultBufferSize)
 	output, err := StartWorkerPools(ctx, jobID, spec, channels.Records, channels.Errors)
 	if err != nil {
 		return result, err
@@ -60,7 +60,7 @@ func Run(ctx context.Context, jobID string, spec domain.JobSpec) (RunResult, err
 			if readErr != nil && ctx.Err() == nil {
 				failure := domain.PipelineError{
 					JobID:     jobID,
-					Stage:     "ingestion",
+					Stage:     StageIngestion,
 					Message:   fmt.Sprintf("source %q: %v", source.Name, readErr),
 					Timestamp: time.Now().UTC(),
 				}

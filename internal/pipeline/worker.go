@@ -11,8 +11,6 @@ import (
 	"github.com/mfvicky/go-data-pipeline/internal/validation"
 )
 
-const maxtWorkers = 64
-
 func StartValidationWorkers(
 	ctx context.Context,
 	jobID string,
@@ -24,7 +22,7 @@ func StartValidationWorkers(
 	if validator == nil {
 		return nil, fmt.Errorf("validator is required")
 	}
-	return startWorkers(ctx, jobID, "validation", workerCount, input, errors, func(record domain.Record) (domain.Record, error) {
+	return startWorkers(ctx, jobID, StageValidation, workerCount, input, errors, func(record domain.Record) (domain.Record, error) {
 		return record, validator.Check(record)
 	})
 }
@@ -40,7 +38,7 @@ func StartTransformationWorkers(
 	if transformer == nil {
 		return nil, fmt.Errorf("transformer is required")
 	}
-	return startWorkers(ctx, jobID, "transformation", workerCount, input, errors, transformer.Apply)
+	return startWorkers(ctx, jobID, StageTransformation, workerCount, input, errors, transformer.Apply)
 }
 
 func StartWorkerPools(
@@ -50,8 +48,8 @@ func StartWorkerPools(
 	input <-chan domain.Record,
 	errors chan<- domain.PipelineError,
 ) (<-chan domain.Record, error) {
-	validationCount := workerCount(spec.WorkerPoolSizes, "validation")
-	transformationCount := workerCount(spec.WorkerPoolSizes, "transformation")
+	validationCount := workerCount(spec.WorkerPoolSizes, StageValidation)
+	transformationCount := workerCount(spec.WorkerPoolSizes, StageTransformation)
 	if err := checkWorkerInputs(ctx, validationCount, input, errors); err != nil {
 		return nil, err
 	}
@@ -86,14 +84,11 @@ func checkWorkerInputs(ctx context.Context, count int, input <-chan domain.Recor
 		return fmt.Errorf("context is required")
 	}
 
-	if count < 1 || count > maxtWorkers {
-		return fmt.Errorf("worker count must be between 1 and %d", maxtWorkers)
+	if count < 1 || count > maxWorkers {
+		return fmt.Errorf("worker count must be between 1 and %d", maxWorkers)
 	}
 	if input == nil {
-		return fmt.Errorf("input chanel is required")
-	}
-	if errors == nil {
-		return fmt.Errorf("error channel is required")
+		return fmt.Errorf("input channel is required")
 	}
 	if errors == nil {
 		return fmt.Errorf("error channel is required")

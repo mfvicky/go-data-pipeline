@@ -13,11 +13,13 @@ import (
 
 	"github.com/mfvicky/go-data-pipeline/internal/domain"
 	"github.com/mfvicky/go-data-pipeline/internal/repository"
+	"github.com/mfvicky/go-data-pipeline/internal/security"
 )
 
-const maxRequestBytes = 1 << 20 // 1 MiB job-spec limit
-
-type handler struct{ repo *repository.JobRepository }
+type handler struct {
+	repo         *repository.JobRepository
+	sourcePolicy *security.SourcePolicy
+}
 
 type apiError struct {
 	Error string `json:"error"`
@@ -63,6 +65,12 @@ func (h *handler) create(w http.ResponseWriter, r *http.Request) {
 	if err := domain.ValidateJobSpec(spec); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if h.sourcePolicy != nil {
+		if err := h.sourcePolicy.Validate(r.Context(), spec.Sources); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	id, err := newJobID()
 	if err != nil {

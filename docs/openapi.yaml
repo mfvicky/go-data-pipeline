@@ -1,0 +1,294 @@
+openapi: 3.0.3
+info:
+  title: Go Data Processing Pipeline API
+  version: 1.0.0
+  description: |
+    Job management API for storing pipeline specifications.
+    This version stores jobs as PENDING; automatic job execution,
+    progress/results/errors endpoints, and aggregation/export are not yet connected to the API.
+servers:
+  - url: http://localhost:8080
+paths:
+  /health:
+    get:
+      tags: [System]
+      summary: Server health check
+      responses:
+        '200':
+          description: Healthy
+          content:
+            text/plain:
+              schema:
+                type: string
+  /api/v1/pipelines:
+    post:
+      tags: [Jobs]
+      summary: Create a pending pipeline job
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobSpec'
+            example:
+              sources:
+                - name: customers_csv
+                  type: csv
+                  endpoint: testdata/input/customers.csv
+              worker_pool_sizes:
+                validation: 2
+                transformation: 2
+      responses:
+        '201':
+          description: Created
+          headers:
+            Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          description: Request body too large
+        '415':
+          description: Content-Type must be application/json
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+    get:
+      tags: [Jobs]
+      summary: List saved pipeline jobs
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Jobs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jobs, count]
+                properties:
+                  jobs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/JobStatus'
+                  count:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /api/v1/pipelines/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Jobs]
+      summary: Get a saved job and specification
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Job details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobDetails'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+    delete:
+      tags: [Jobs]
+      summary: Delete a non-running job
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '204':
+          description: Deleted successfully
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Running job cannot be deleted
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Required when API_KEY is configured; always required in production.
+  responses:
+    BadRequest:
+      description: Invalid job specification
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+    NotFound:
+      description: Job not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+    TooManyRequests:
+      description: Too many requests
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+  schemas:
+    APIError:
+      type: object
+      properties:
+        error:
+          type: string
+    Source:
+      type: object
+      required: [type, endpoint]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [csv, json, api]
+        endpoint:
+          type: string
+        record_path:
+          type: string
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+    Aggregation:
+      type: object
+      required: [name, operation]
+      properties:
+        name:
+          type: string
+        operation:
+          type: string
+          enum: [count, sum, avg]
+        field:
+          type: string
+        group_by:
+          type: array
+          items:
+            type: string
+    Export:
+      type: object
+      required: [type, path]
+      properties:
+        type:
+          type: string
+          enum: [csv, json]
+        path:
+          type: string
+    JobSpec:
+      type: object
+      required: [sources]
+      additionalProperties: false
+      properties:
+        sources:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/Source'
+        validation_rules:
+          type: object
+          additionalProperties: true
+        transform_rules:
+          type: object
+          additionalProperties: true
+        aggregations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Aggregation'
+        worker_pool_sizes:
+          type: object
+          additionalProperties:
+            type: integer
+            minimum: 1
+            maximum: 64
+        timeout_seconds:
+          type: integer
+          minimum: 0
+          maximum: 3600
+        export_targets:
+          type: array
+          items:
+            type: string
+        exports:
+          type: array
+          items:
+            $ref: '#/components/schemas/Export'
+    CreateResponse:
+      type: object
+      required: [job_id, state, message]
+      properties:
+        job_id:
+          type: string
+        state:
+          type: string
+          enum: [PENDING]
+        message:
+          type: string
+    JobStatus:
+      type: object
+      properties:
+        job_id:
+          type: string
+        state:
+          type: string
+          enum: [PENDING, RUNNING, COMPLETED, FAILED, CANCELLED]
+        records_processed:
+          type: integer
+          format: int64
+        records_pending:
+          type: integer
+          format: int64
+        error_count:
+          type: integer
+          format: int64
+        percent_complete:
+          type: number
+        created_at:
+          type: string
+          format: date-time
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+    JobDetails:
+      type: object
+      properties:
+        job_id:
+          type: string
+        spec:
+          $ref: '#/components/schemas/JobSpec'
+        status:
+          $ref: '#/components/schemas/JobStatus'
