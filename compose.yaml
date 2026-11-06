@@ -15,6 +15,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+      - /app/output:uid=65532,gid=65532,mode=0750
     security_opt:
       - no-new-privileges:true
     cap_drop:

@@ -86,7 +86,7 @@
       ]
     },
     {
-      "name": "05 - Create pending job",
+      "name": "05 - Create and start job",
       "request": {
         "method": "POST",
         "header": [
@@ -274,6 +274,62 @@
           }
         }
       ]
+    },
+    {
+      "name": "11 - Get job progress",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}",
+            "type": "text"
+          }
+        ],
+        "url": "{{baseUrl}}/api/v1/pipelines/{{jobId}}/progress"
+      }
+    },
+    {
+      "name": "12 - Get job results",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}",
+            "type": "text"
+          }
+        ],
+        "url": "{{baseUrl}}/api/v1/pipelines/{{jobId}}/results"
+      }
+    },
+    {
+      "name": "13 - Get job errors",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}",
+            "type": "text"
+          }
+        ],
+        "url": "{{baseUrl}}/api/v1/pipelines/{{jobId}}/errors"
+      }
+    },
+    {
+      "name": "14 - Cancel running job",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}",
+            "type": "text"
+          }
+        ],
+        "url": "{{baseUrl}}/api/v1/pipelines/{{jobId}}/cancel"
+      }
     }
   ],
   "variable": [

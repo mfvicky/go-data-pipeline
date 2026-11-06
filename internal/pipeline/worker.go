@@ -48,6 +48,10 @@ func StartWorkerPools(
 	input <-chan domain.Record,
 	errors chan<- domain.PipelineError,
 ) (<-chan domain.Record, error) {
+	return startWorkerPoolsObserved(ctx, jobID, spec, input, errors, nil)
+}
+
+func startWorkerPoolsObserved(ctx context.Context, jobID string, spec domain.JobSpec, input <-chan domain.Record, errors chan<- domain.PipelineError, monitor *metricsTracker) (<-chan domain.Record, error) {
 	validationCount := workerCount(spec.WorkerPoolSizes, StageValidation)
 	transformationCount := workerCount(spec.WorkerPoolSizes, StageTransformation)
 	if err := checkWorkerInputs(ctx, validationCount, input, errors); err != nil {
@@ -65,11 +69,13 @@ func StartWorkerPools(
 		return nil, fmt.Errorf("transformation rules: %w", err)
 	}
 
-	validated, err := StartValidationWorkers(ctx, jobID, validationCount, validator, input, errors)
+	validated, err := startWorkersObserved(ctx, jobID, StageValidation, validationCount, input, errors, monitor, func(record domain.Record) (domain.Record, error) {
+		return record, validator.Check(record)
+	})
 	if err != nil {
 		return nil, err
 	}
-	return StartTransformationWorkers(ctx, jobID, transformationCount, transformer, validated, errors)
+	return startWorkersObserved(ctx, jobID, StageTransformation, transformationCount, validated, errors, monitor, transformer.Apply)
 }
 
 func workerCount(sizes map[string]int, stage string) int {
@@ -105,6 +111,19 @@ func startWorkers(
 	errors chan<- domain.PipelineError,
 	process func(domain.Record) (domain.Record, error),
 ) (<-chan domain.Record, error) {
+	return startWorkersObserved(ctx, jobID, stage, count, input, errors, nil, process)
+}
+
+func startWorkersObserved(
+	ctx context.Context,
+	jobID string,
+	stage string,
+	count int,
+	input <-chan domain.Record,
+	errors chan<- domain.PipelineError,
+	monitor *metricsTracker,
+	process func(domain.Record) (domain.Record, error),
+) (<-chan domain.Record, error) {
 	if err := checkWorkerInputs(ctx, count, input, errors); err != nil {
 		return nil, err
 	}
@@ -123,6 +142,7 @@ func startWorkers(
 					if !ok {
 						return
 					}
+					start := time.Now()
 					processed, err := process(record)
 					if ctx.Err() != nil {
 						return
@@ -133,12 +153,17 @@ func startWorkers(
 							Stage:     stage,
 							RecordID:  record.ID,
 							Message:   err.Error(),
+							Record:    &record,
 							Timestamp: time.Now().UTC(),
 						}
 						select {
 						case <-ctx.Done():
 							return
 						case errors <- failure:
+							if monitor != nil {
+								monitor.reportError(failure)
+								monitor.stageComplete(stage, time.Since(start), 1)
+							}
 						}
 						continue
 					}
@@ -146,6 +171,9 @@ func startWorkers(
 					case <-ctx.Done():
 						return
 					case output <- processed:
+						if monitor != nil {
+							monitor.stageComplete(stage, time.Since(start), 0)
+						}
 					}
 
 				}

@@ -15,6 +15,7 @@ import (
 
 type SourcePolicy struct {
 	InputDir            string
+	OutputDir           string
 	AllowPrivateSources bool
 }
 
@@ -101,4 +102,48 @@ func isPublicIP(ip netip.Addr) bool {
 		}
 	}
 	return true
+}
+
+// ValidateExports limits API-selected exports to an explicit output directory.
+// The check rejects existing symlink components, but is not a replacement for
+// OS-level filesystem isolation against a malicious local process.
+func (p SourcePolicy) ValidateExports(targets []domain.ExportConfig) error {
+	if len(targets) == 0 {
+		return nil
+	}
+	if p.OutputDir == "" {
+		return fmt.Errorf("output directory is not configured")
+	}
+	root, err := filepath.Abs(p.OutputDir)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(root, 0750); err != nil {
+		return fmt.Errorf("create output directory: %w", err)
+	}
+	for i, target := range targets {
+		path, err := filepath.Abs(target.Path)
+		if err != nil {
+			return fmt.Errorf("exports[%d].path: %w", i, err)
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+			return fmt.Errorf("exports[%d].path: must be inside OUTPUT_DIR", i)
+		}
+		current := root
+		for _, piece := range strings.Split(relative, string(os.PathSeparator)) {
+			current = filepath.Join(current, piece)
+			info, statErr := os.Lstat(current)
+			if statErr != nil {
+				if os.IsNotExist(statErr) {
+					continue
+				}
+				return fmt.Errorf("exports[%d].path: %w", i, statErr)
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("exports[%d].path: symlink components are not allowed", i)
+			}
+		}
+	}
+	return nil
 }

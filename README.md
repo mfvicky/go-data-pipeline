@@ -1,8 +1,8 @@
 # Go Data Processing Pipeline
 
-Concurrent CSV/JSON/HTTP ingestion, record validation and transformation, and a REST API for storing pipeline jobs. Uses Go 1.23+ and `net/http` without a web framework.
+Concurrent CSV/JSON/HTTP ingestion, record validation, transformation, aggregation and CSV/JSON export, and a REST API for storing pipeline jobs. Uses Go 1.23+ and `net/http` without a web framework.
 
-**Current behavior:** `POST /api/v1/pipelines` creates a `PENDING` job. The standalone `pipeline.Run()` executes ingestion → validation → transformation in Go code/tests. REST-driven execution, aggregation, exports, and progress/results/error API endpoints are **not connected yet**.
+**Current behavior:** `POST /api/v1/pipelines` creates a job and launches the pipeline asynchronously. Poll the progress endpoint until `COMPLETED`, `FAILED`, or `CANCELLED`. Job results and errors are stored in memory only.
 
 ## Requirements
 
@@ -47,6 +47,14 @@ Using the same Git Bash terminal to set environment variables and start the serv
 
 See `.env.example`. The Go application reads *environment variables*, not `.env` files automatically. Load settings using your shell, container environment or deployment manager. Do not commit API keys.
 
+## Aggregation and export
+
+`pipeline.Run(ctx, jobID, spec)` now executes `aggregations` and `exports` from `JobSpec` after validation and transformation. Aggregation supports `count`, `sum`, and `avg`; `group_by` accepts multiple field names. Numeric fields can be JSON numbers or numeric CSV strings. Bad numeric/group values are added to `RunResult.Errors` for the aggregation stage and excluded from that aggregation. Ungrouped empty aggregates return value and count of zero; grouped empty aggregates produce no rows.
+
+`RunResult.Aggregations` holds results (`name`, `operation`, optional `field` and `group`, `value`, `count`). A JSON export contains `job_id`, `records`, `aggregations`, and `errors`. A CSV export writes the transformed records, with metadata columns `record_id`, `source`, and `timestamp` followed by sorted data columns. Use `exports` with explicit paths; the legacy `export_targets` field does not create files.
+
+`examples/create_job.json` shows the configuration. Verify execution and generated files through `go test ./internal/pipeline -run TestRunAggregationAndExports -v`. **The HTTP POST endpoint now runs these stages asynchronously.** The HTTP API confines export paths to `output/`. Use trusted source URLs until connect-time HTTP DNS-rebinding and redirect checks are implemented.
+
 ## HTTP API
 
 | Method | Path | Status |
@@ -54,7 +62,11 @@ See `.env.example`. The Go application reads *environment variables*, not `.env`
 | GET | `/health` | Available, public |
 | GET | `/openapi.yaml` | Available, public |
 | GET | `/swagger/` | Available, public |
-| POST | `/api/v1/pipelines` | Available; creates `PENDING` job |
+| POST | `/api/v1/pipelines` | Creates and starts an asynchronous job |
+| GET | `/api/v1/pipelines/{id}/progress` | Status, counters, throughput and stage latencies |
+| GET | `/api/v1/pipelines/{id}/results` | Records, aggregations, errors, failed records (terminal jobs only) |
+| GET | `/api/v1/pipelines/{id}/errors` | Live failures and failed records |
+| POST | `/api/v1/pipelines/{id}/cancel` | Requests cancellation (202); poll progress |
 | GET | `/api/v1/pipelines` | Available; lists saved jobs |
 | GET | `/api/v1/pipelines/{id}` | Available; retrieves job details |
 | DELETE | `/api/v1/pipelines/{id}` | Available; deletes non-running jobs |
@@ -77,7 +89,7 @@ curl -i -H "X-API-Key: ${API_KEY}" http://localhost:8080/api/v1/pipelines/YOUR_J
 curl -i -X DELETE -H "X-API-Key: ${API_KEY}" http://localhost:8080/api/v1/pipelines/YOUR_JOB_ID
 ```
 
-Expected create status: **201**, state **PENDING**. List/details: **200**, delete: **204**, missing job: **404**, invalid spec: **400**, wrong API key: **401**, throttled: **429**.
+Expected create status: **201**, initially `PENDING`. The job then transitions through `RUNNING` to `COMPLETED`/`FAILED`/`CANCELLED`. Results return **409** until the job finishes. List/details: **200**, delete: **204** for finished jobs, missing job: **404**, invalid spec: **400**, wrong API key: **401**, throttled: **429**.
 
 ## Swagger / OpenAPI
 
@@ -108,6 +120,22 @@ curl -i http://localhost:8080/health
 Read your API key from the `.env` file for authenticated requests. Stop the service with `docker compose down`. Compose maps container port 8080 to your machine's loopback address only. The container is non-root, read-only and has its input dataset packaged under `/app/testdata/input`.
 
 The image uses a multi-stage Go build and a minimal distroless runtime. A working Docker engine is required; CI currently checks Go code, not Docker image builds.
+
+## Progress, results, errors and cancellation
+
+`POST /api/v1/pipelines` runs the job in the background. Status starts as `PENDING` and may immediately transition to `RUNNING`. `GET /api/v1/pipelines/{id}/progress` returns `records_read`, `records_processed`, `records_failed`, `records_pending`, `error_count`, `rate_per_second`, `percent_complete`, and `stage_latencies` (count, total milliseconds and average milliseconds per stage). Ingestion latency is measured per **source**, validation/transformation per **record**, aggregation per **batch**, and export per **file**. `records_processed` counts transformed records that passed validation/transformation; numeric aggregation errors are counted separately without rejecting those records.
+
+`GET /api/v1/pipelines/{id}/results` returns data only after a terminal state; before then it responds with `409`. The `errors` endpoint works while running and includes the original record when available. The `cancel` endpoint responds `202` when cancellation is requested; poll progress until it becomes `CANCELLED`. Finished jobs return `409` to cancellation requests. Partial results remain queryable for failed/cancelled jobs. Unexpected source failures are collected while other sources continue. A nonfatal record rejection does not cause the whole job to fail.
+
+### Smoke verification
+
+With the server running (`make run`) and optional `API_KEY` configured, run in a **second** Git Bash terminal:
+
+```bash
+BASE_URL=http://127.0.0.1:8080 bash scripts/smoke.sh
+```
+
+The smoke script submits CSV/JSON input, polls progress, reads results and errors, and checks both completed output and failed-record collection. `API_KEY` can be supplied in the testing terminal. See [Observability Verification](docs/OBSERVABILITY_VERIFICATION.md) for manual cURL commands and expected codes.
 
 ## Tests and development checks
 
@@ -206,4 +234,5 @@ See [architecture details](docs/architecture.md), [design trade-offs](docs/desig
 - File source paths are constrained at submission time to `INPUT_DIR`; future execution should recheck opened files to avoid filesystem races.
 - Authentication is required on non-loopback listeners; development defaults work on local loopback only.
 - Rate limiting is in-memory and per process, based on the direct connection IP. Use a gateway for distributed limits or trusted proxy handling.
-- Jobs are in memory and will be lost after restart. No database, aggregation, export, or automatic job execution is included in this baseline.
+- Jobs, progress, errors and results are kept in memory and will be lost after restart; no database or durable job queue is implemented.
+- HTTP jobs execute user-configured source URLs. API export paths are restricted to `output/`, but stronger OS-level sandboxing and outbound HTTP redirect/DNS rebinding protections are still pending.

@@ -42,12 +42,16 @@ func main() {
 		logger.Warn("API key is disabled; bind only to loopback")
 	}
 
-	policy := &security.SourcePolicy{InputDir: cfg.InputDir, AllowPrivateSources: cfg.AllowPrivateSources}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	policy := &security.SourcePolicy{InputDir: cfg.InputDir, OutputDir: "output", AllowPrivateSources: cfg.AllowPrivateSources}
 	router := api.NewRouterWithOptions(repository.NewJobRepository(), api.Options{
 		APIKey:             cfg.APIKey,
 		RateLimitPerMinute: cfg.RateLimitPerMinute,
 		Logger:             logger,
 		SourcePolicy:       policy,
+		JobContext:         ctx,
 	})
 
 	server := &http.Server{
@@ -59,8 +63,6 @@ func main() {
 		IdleTimeout:       cfg.IdleTimeout,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)

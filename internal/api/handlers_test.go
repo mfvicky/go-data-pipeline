@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mfvicky/go-data-pipeline/internal/domain"
 	"github.com/mfvicky/go-data-pipeline/internal/repository"
@@ -39,6 +42,14 @@ func testRequest(t *testing.T, server http.Handler, method, path, body string) *
 
 func TestJobAPI_CRUD(t *testing.T) {
 	mux := NewRouter(repository.NewJobRepository())
+	csvPath := filepath.Join(t.TempDir(), "input.csv")
+	if err := os.WriteFile(csvPath, []byte("id,city,amount\n1,Delhi,5\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	specBody, err := json.Marshal(domain.JobSpec{Sources: []domain.SourceConfig{{Type: "csv", Endpoint: csvPath}}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if resp := testRequest(t, mux, "GET", "/health", ""); resp.Code != http.StatusOK {
 		t.Fatalf("health: %d", resp.Code)
 	}
@@ -46,7 +57,7 @@ func TestJobAPI_CRUD(t *testing.T) {
 	if empty.Code != http.StatusOK || !bytes.Contains(empty.Body.Bytes(), []byte(`"count":0`)) || !bytes.Contains(empty.Body.Bytes(), []byte(`"jobs":[]`)) {
 		t.Fatalf("empty job listing: %d %s", empty.Code, empty.Body.String())
 	}
-	created := testRequest(t, mux, "POST", "/api/v1/pipelines", exampleSpec)
+	created := testRequest(t, mux, "POST", "/api/v1/pipelines", string(specBody))
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create: %d %s", created.Code, created.Body.String())
 	}
@@ -73,11 +84,26 @@ func TestJobAPI_CRUD(t *testing.T) {
 	if err := json.Unmarshal(get.Body.Bytes(), &details); err != nil {
 		t.Fatal(err)
 	}
-	if details.Spec.Sources[1].Type != "api" || details.Status.JobID != response.JobID || details.Status.CreatedAt.IsZero() || details.Status.State != domain.StatePending {
+	if details.Spec.Sources[0].Type != "csv" || details.Status.JobID != response.JobID || details.Status.CreatedAt.IsZero() {
 		t.Fatalf("unexpected details: %+v", details)
 	}
-	if details.Status.StartTime != nil || details.Status.RecordsProcessed != 0 {
-		t.Fatal("should not execute pipeline jobs")
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		state, err := testStatus(mux, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state == domain.StateCompleted {
+			break
+		}
+		if state == domain.StateFailed || state == domain.StateCancelled {
+			t.Fatalf("unexpected state %s", state)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	state, err := testStatus(mux, path)
+	if err != nil || state != domain.StateCompleted {
+		t.Fatalf("job did not finish: %v %v", state, err)
 	}
 	listed := testRequest(t, mux, "GET", "/api/v1/pipelines", "")
 	if listed.Code != http.StatusOK || !bytes.Contains(listed.Body.Bytes(), []byte(`"count":1`)) {
@@ -143,4 +169,15 @@ func TestDeleteRejectsRunningJob(t *testing.T) {
 	if _, err := r.GetStatus(id); err != nil {
 		t.Fatalf("job should still exist: %v", err)
 	}
+}
+
+func testStatus(router http.Handler, path string) (domain.JobState, error) {
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, req)
+	var job domain.JobDetails
+	if err := json.Unmarshal(response.Body.Bytes(), &job); err != nil {
+		return "", err
+	}
+	return job.Status.State, nil
 }

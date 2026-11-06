@@ -9,23 +9,28 @@ import (
 )
 
 var (
-	ErrNotFound = errors.New("job not found")
-	ErrExists   = errors.New("job already exists")
-	ErrRunning  = errors.New("cannot delete running job")
+	ErrNotFound       = errors.New("job not found")
+	ErrExists         = errors.New("job already exists")
+	ErrRunning        = errors.New("cannot delete pending or running job")
+	ErrResultNotReady = errors.New("job results are not ready")
 )
 
 // JobRepository stores pending job specifications and execution status in memory.
 // Nothing survives a server restart. All returned objects are defensive copies.
 type JobRepository struct {
-	mu    sync.RWMutex
-	jobs  map[string]*domain.JobStatus
-	specs map[string]*domain.JobSpec
+	mu      sync.RWMutex
+	jobs    map[string]*domain.JobStatus
+	specs   map[string]*domain.JobSpec
+	results map[string]*domain.JobOutput
+	errors  map[string][]domain.PipelineError
 }
 
 func NewJobRepository() *JobRepository {
 	return &JobRepository{
-		jobs:  make(map[string]*domain.JobStatus),
-		specs: make(map[string]*domain.JobSpec),
+		jobs:    make(map[string]*domain.JobStatus),
+		specs:   make(map[string]*domain.JobSpec),
+		results: make(map[string]*domain.JobOutput),
+		errors:  make(map[string][]domain.PipelineError),
 	}
 }
 
@@ -123,15 +128,113 @@ func (r *JobRepository) DeleteJob(jobID string) error {
 	if !exists {
 		return ErrNotFound
 	}
-	if status.State == domain.StateRunning {
+	if status.State == domain.StateRunning || status.State == domain.StatePending {
 		return ErrRunning
 	}
 	delete(r.jobs, jobID)
 	delete(r.specs, jobID)
+	delete(r.results, jobID)
+	delete(r.errors, jobID)
 	return nil
 }
 
+// AppendError stores a failure while the job is still running.
+func (r *JobRepository) AppendError(jobID string, failure domain.PipelineError) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.jobs[jobID]; !exists {
+		return ErrNotFound
+	}
+	r.errors[jobID] = append(r.errors[jobID], cloneError(failure))
+	return nil
+}
+
+func (r *JobRepository) GetErrors(jobID string) ([]domain.PipelineError, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if _, exists := r.jobs[jobID]; !exists {
+		return nil, ErrNotFound
+	}
+	failures := make([]domain.PipelineError, len(r.errors[jobID]))
+	for i, failure := range r.errors[jobID] {
+		failures[i] = cloneError(failure)
+	}
+	return failures, nil
+}
+
+// SaveResult stores a complete snapshot, even when a job failed or was cancelled.
+func (r *JobRepository) SaveResult(jobID string, result domain.JobOutput) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.jobs[jobID]; !exists {
+		return ErrNotFound
+	}
+	copyResult := cloneOutput(result)
+	r.results[jobID] = &copyResult
+	r.errors[jobID] = make([]domain.PipelineError, len(copyResult.Errors))
+	for i, failure := range copyResult.Errors {
+		r.errors[jobID][i] = cloneError(failure)
+	}
+	return nil
+}
+
+func (r *JobRepository) GetResult(jobID string) (*domain.JobOutput, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if _, exists := r.jobs[jobID]; !exists {
+		return nil, ErrNotFound
+	}
+	result, exists := r.results[jobID]
+	if !exists {
+		return nil, ErrResultNotReady
+	}
+	copyResult := cloneOutput(*result)
+	return &copyResult, nil
+}
+
+func cloneRecord(record domain.Record) domain.Record {
+	record.Data = cloneAnyMap(record.Data)
+	return record
+}
+
+func cloneError(failure domain.PipelineError) domain.PipelineError {
+	if failure.Record != nil {
+		record := cloneRecord(*failure.Record)
+		failure.Record = &record
+	}
+	return failure
+}
+
+func cloneOutput(result domain.JobOutput) domain.JobOutput {
+	out := domain.JobOutput{JobID: result.JobID}
+	out.Records = make([]domain.Record, len(result.Records))
+	for i, record := range result.Records {
+		out.Records[i] = cloneRecord(record)
+	}
+	out.Aggregations = make([]domain.AggregationResult, len(result.Aggregations))
+	for i, aggregation := range result.Aggregations {
+		out.Aggregations[i] = aggregation
+		out.Aggregations[i].Group = cloneAnyMap(aggregation.Group)
+	}
+	out.Errors = make([]domain.PipelineError, len(result.Errors))
+	for i, failure := range result.Errors {
+		out.Errors[i] = cloneError(failure)
+	}
+	out.FailedRecords = make([]domain.FailedRecord, len(result.FailedRecords))
+	for i, failure := range result.FailedRecords {
+		out.FailedRecords[i] = domain.FailedRecord{Record: cloneRecord(failure.Record), Error: cloneError(failure.Error)}
+	}
+	return out
+}
+
 func cloneStatus(s domain.JobStatus) domain.JobStatus {
+	if s.StageLatencies != nil {
+		copyLatencies := make(map[string]domain.StageLatency, len(s.StageLatencies))
+		for name, latency := range s.StageLatencies {
+			copyLatencies[name] = latency
+		}
+		s.StageLatencies = copyLatencies
+	}
 	if s.StartTime != nil {
 		start := *s.StartTime
 		s.StartTime = &start

@@ -2,7 +2,7 @@
 
 The project uses Go's standard `net/http` package and packages grouped by responsibility. This keeps learning and debugging straightforward without introducing a framework or unnecessary service/interface layers.
 
-CSV, JSON and HTTP API readers convert input into `domain.Record`. A runner fans out source reads and uses configurable validation/transformation goroutine pools connected by typed channels. `context.Context` controls cancellation; producers own channel closure. Results and stage errors are returned to the runner's caller. The HTTP API currently stores jobs but does not execute the runner.
+CSV, JSON and HTTP API readers convert input into `domain.Record`. A runner fans out source reads and uses configurable validation/transformation goroutine pools connected by typed channels. `context.Context` controls cancellation; producers own channel closure. Results and stage errors are returned to the runner's caller. The HTTP API now launches runner jobs asynchronously and stores status, results, and errors in the in-memory repository.
 
 The job repository uses a mutex-protected in-memory map. This is convenient for development but jobs disappear at restart and are not shared across replicas. A persistent database and transactional job lifecycle will be needed for durable production workloads.
 

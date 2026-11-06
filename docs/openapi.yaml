@@ -3,9 +3,8 @@ info:
   title: Go Data Processing Pipeline API
   version: 1.0.0
   description: |
-    Job management API for storing pipeline specifications.
-    This version stores jobs as PENDING; automatic job execution,
-    progress/results/errors endpoints, and aggregation/export are not yet connected to the API.
+    Job management API for asynchronously executing concurrent pipeline jobs.
+    Results and progress are held in memory until the server restarts.
 servers:
   - url: http://localhost:8080
 paths:
@@ -23,7 +22,7 @@ paths:
   /api/v1/pipelines:
     post:
       tags: [Jobs]
-      summary: Create a pending pipeline job
+      summary: Submit a pipeline job for asynchronous execution
       security:
         - ApiKeyAuth: []
       requestBody:
@@ -42,7 +41,7 @@ paths:
                 transformation: 2
       responses:
         '201':
-          description: Created
+          description: Accepted for asynchronous execution; initially PENDING
           headers:
             Location:
               schema:
@@ -126,6 +125,85 @@ paths:
           description: Running job cannot be deleted
         '429':
           $ref: '#/components/responses/TooManyRequests'
+  /api/v1/pipelines/{id}/progress:
+    get:
+      tags: [Jobs]
+      summary: Current job status, progress, throughput and stage latency metrics
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: Progress snapshot
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/JobStatus'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/pipelines/{id}/results:
+    get:
+      tags: [Jobs]
+      summary: Finished job records, aggregations, errors and rejected records
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: Finished job results (also returned for FAILED or CANCELLED jobs)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/JobOutput'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {description: Job has not finished yet}
+  /api/v1/pipelines/{id}/errors:
+    get:
+      tags: [Jobs]
+      summary: Live error and failed-record collection
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: Errors available so far
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: {type: integer}
+                  errors:
+                    type: array
+                    items: {$ref: '#/components/schemas/PipelineError'}
+                  failed_records:
+                    type: array
+                    items: {$ref: '#/components/schemas/FailedRecord'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/pipelines/{id}/cancel:
+    post:
+      tags: [Jobs]
+      summary: Request cooperative cancellation of a PENDING or RUNNING job
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '202': {description: Cancellation requested; poll progress until CANCELLED}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {description: Job is no longer cancellable}
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -266,6 +344,19 @@ components:
         records_processed:
           type: integer
           format: int64
+        records_read:
+          type: integer
+          format: int64
+        records_failed:
+          type: integer
+          format: int64
+        rate_per_second:
+          type: number
+          format: double
+        stage_latencies:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/StageLatency'
         records_pending:
           type: integer
           format: int64
@@ -292,3 +383,48 @@ components:
           $ref: '#/components/schemas/JobSpec'
         status:
           $ref: '#/components/schemas/JobStatus'
+    StageLatency:
+      type: object
+      properties:
+        count: {type: integer, format: int64}
+        total_milliseconds: {type: number}
+        average_milliseconds: {type: number}
+    PipelineError:
+      type: object
+      properties:
+        job_id: {type: string}
+        stage: {type: string}
+        record_id: {type: string}
+        message: {type: string}
+        timestamp: {type: string, format: date-time}
+        record: {type: object, additionalProperties: true}
+    FailedRecord:
+      type: object
+      properties:
+        record: {type: object, additionalProperties: true}
+        error: {$ref: '#/components/schemas/PipelineError'}
+    AggregationResult:
+      type: object
+      properties:
+        name: {type: string}
+        operation: {type: string}
+        field: {type: string}
+        group: {type: object, additionalProperties: true}
+        value: {type: number}
+        count: {type: integer, format: int64}
+    JobOutput:
+      type: object
+      properties:
+        job_id: {type: string}
+        records:
+          type: array
+          items: {type: object, additionalProperties: true}
+        aggregations:
+          type: array
+          items: {$ref: '#/components/schemas/AggregationResult'}
+        errors:
+          type: array
+          items: {$ref: '#/components/schemas/PipelineError'}
+        failed_records:
+          type: array
+          items: {$ref: '#/components/schemas/FailedRecord'}

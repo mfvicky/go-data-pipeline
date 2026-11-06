@@ -17,9 +17,9 @@ request ID -> request logging -> panic recovery -> security headers
                                      |
                                      v
                          In-memory job repository
-                            (status PENDING)
+                            (PENDING → RUNNING → terminal)
 
-Pipeline runner (currently called by Go code/tests, not REST API):
+API job manager starts pipeline.RunWithObserver asynchronously:
 CSV/JSON/HTTP source goroutines
         |
      records channel
@@ -29,6 +29,12 @@ CSV/JSON/HTTP source goroutines
  transformation worker pool -> errors channel
         |
     processed records
+        |
+ aggregation -> JSON/CSV export
+        |
+ centralized results/errors -> in-memory repository
+        |
+ progress / errors / results / cancel HTTP endpoints
 ```
 
 ## Package responsibilities
@@ -41,13 +47,15 @@ CSV/JSON/HTTP source goroutines
 - `internal/ingestion`: CSV/JSON/local and external HTTP input readers.
 - `internal/validation`: record rules and invalid-record filtering.
 - `internal/transformation`: normalization and type conversions.
-- `internal/pipeline`: channels, worker pools, cancellation and runner.
+- `internal/pipeline`: channels, worker pools, cancellation, aggregation/export runner and live metrics.
+- `internal/jobs`: asynchronous job manager, status changes and cancellation.
+- `internal/aggregation`, `internal/export`: aggregation and CSV/JSON file output.
 - `internal/repository`: in-memory state with mutex protection.
 - `docs`: embedded OpenAPI specification and Swagger UI entrypoint.
 
 ## Notes
 
-- The REST API stores specifications; automatic job execution is not connected yet.
-- Aggregation, exporting and advanced metrics are not implemented by this code baseline.
+- The REST API saves specifications and starts asynchronous pipeline jobs.
+- Aggregation, exporting and live progress metrics are implemented; results remain in memory.
 - The repository is in-memory; restarting the server clears jobs.
 - Source validation on job creation does not replace secure DNS resolution and network filtering at *connection time*. Add connection-time SSRF protection before exposing job execution to untrusted users.

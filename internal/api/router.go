@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
 
 	"github.com/mfvicky/go-data-pipeline/docs"
+	"github.com/mfvicky/go-data-pipeline/internal/jobs"
 	"github.com/mfvicky/go-data-pipeline/internal/middleware"
 	"github.com/mfvicky/go-data-pipeline/internal/repository"
 	"github.com/mfvicky/go-data-pipeline/internal/security"
@@ -16,6 +18,7 @@ type Options struct {
 	RateLimitPerMinute int
 	Logger             *slog.Logger
 	SourcePolicy       *security.SourcePolicy
+	JobContext         context.Context
 }
 
 func NewRouter(repo *repository.JobRepository) http.Handler {
@@ -31,7 +34,7 @@ func NewRouterWithOptions(repo *repository.JobRepository, opts Options) http.Han
 		opts.RateLimitPerMinute = 120
 	}
 	limiter := middleware.NewLimiter(opts.RateLimitPerMinute)
-	h := &handler{repo: repo, sourcePolicy: opts.SourcePolicy}
+	h := &handler{repo: repo, manager: jobs.NewManager(repo, opts.JobContext), sourcePolicy: opts.SourcePolicy}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET "+HealthPath, func(w http.ResponseWriter, _ *http.Request) {
@@ -55,6 +58,10 @@ func NewRouterWithOptions(repo *repository.JobRepository, opts Options) http.Han
 	mux.Handle("GET "+PipelinesPath, protected(h.list))
 	mux.Handle("GET "+PipelinesPath+"/{id}", protected(h.get))
 	mux.Handle("DELETE "+PipelinesPath+"/{id}", protected(h.delete))
+	mux.Handle("GET "+PipelinesPath+"/{id}/results", protected(h.results))
+	mux.Handle("GET "+PipelinesPath+"/{id}/errors", protected(h.errors))
+	mux.Handle("GET "+PipelinesPath+"/{id}/progress", protected(h.progress))
+	mux.Handle("POST "+PipelinesPath+"/{id}/cancel", protected(h.cancel))
 
 	return middleware.RequestID(
 		middleware.Logging(logger)(

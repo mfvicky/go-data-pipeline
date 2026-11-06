@@ -2,7 +2,7 @@
 
 Use this guide **after** [SETUP.md](SETUP.md). It matches the production-structure project derived from `cmd2.zip` and tests **only functionality currently implemented**.
 
-**Current behavior:** The REST API creates and stores `PENDING` job specifications. It does **not** execute them automatically. The ingestion → validation → transformation pipeline is verified through the `pipeline.Run()` integration tests. Aggregation, exports, and `/progress`, `/results`, `/errors`, `/cancel` API routes are **not yet implemented** in this baseline.
+**Current behavior:** The REST API asynchronously runs pipeline jobs. Progress, results, errors and cancellation routes are implemented. See [Observability Verification](OBSERVABILITY_VERIFICATION.md) for current smoke-test commands.
 
 ## 1. Automated project checks
 
@@ -141,7 +141,7 @@ curl -i -X POST http://localhost:8080/api/v1/pipelines \
   -d '{"sources":[{"name":"customers_csv","type":"csv","endpoint":"testdata/input/customers.csv"}]}'
 ```
 
-Expected: **201 Created** and a JSON body containing a newly generated `job_id`, `state: "PENDING"`, and a message indicating execution is not implemented through this API. Copy the real ID from your response:
+Expected: **201 Created** and a JSON body containing a newly generated `job_id`, `state: "PENDING"`, and a message indicating asynchronous execution was accepted. Copy the real ID from your response:
 
 ```bash
 JOB_ID='PASTE_YOUR_JOB_ID_HERE'
@@ -149,7 +149,7 @@ curl -i -H "X-API-Key: $API_KEY" http://localhost:8080/api/v1/pipelines
 curl -i -H "X-API-Key: $API_KEY" "http://localhost:8080/api/v1/pipelines/$JOB_ID"
 ```
 
-Expected: **200** for list and details, with the job present. `records_processed` will remain **0** because the API has not run the job.
+Expected: **200** for list and details, with the job present. `records_processed` increases as the job runs; poll `/api/v1/pipelines/$JOB_ID/progress` for `COMPLETED`.
 
 ### Invalid request test
 
@@ -174,6 +174,8 @@ curl -i -X POST http://localhost:8080/api/v1/pipelines \
 Expected: **400** because the source is not an allowed regular file inside `INPUT_DIR`. The exact error may differ depending on whether the file exists.
 
 ### Delete and verify removal
+
+Wait until `/progress` reports `COMPLETED`, `FAILED`, or `CANCELLED` before deleting the job. Pending/running jobs cannot be deleted.
 
 ```bash
 curl -i -X DELETE -H "X-API-Key: $API_KEY" \
@@ -240,7 +242,7 @@ Expected tests include:
 - Validation: `TestCheck`, `TestFilter`, `TestExistingCSV`, `TestInvalidConfiguration`.
 - Transformation: `TestApply`, `TestInvalidConversion`, `TestInvalidConfiguration`, `TestExistingCSV`.
 
-These verify required fields, types, numeric rules, invalid-record filtering, string normalization, and type conversions. They are not REST API endpoints yet.
+These verify required fields, types, numeric rules, invalid-record filtering, string normalization, and type conversions.
 
 ## 7. Verify worker pools and the connected pipeline
 
@@ -271,7 +273,7 @@ go test ./internal/pipeline \
 
 Expected: both tests **PASS**. They use a test HTTP server and do not depend on a public API being reachable.
 
-## 8. Postman verification (currently implemented API only)
+## 8. Postman verification
 
 1. Create a collection `Go Data Pipeline` and a collection variable `base_url` = `http://localhost:8080`.
 2. Add `api_key` containing the same value as `.env` `API_KEY` (handle it as a secret).
@@ -300,7 +302,7 @@ Expected: both tests **PASS**. They use a test HTTP server and do not depend on 
 
 5. Create `GET {{base_url}}/api/v1/pipelines`: expect **200**, provide `X-API-Key`.
 6. Create `GET {{base_url}}/api/v1/pipelines/{{job_id}}`: expect **200**, provide `X-API-Key`.
-7. Create `DELETE {{base_url}}/api/v1/pipelines/{{job_id}}`: expect **204**, provide `X-API-Key`.
+7. Poll `GET {{base_url}}/api/v1/pipelines/{{job_id}}/progress` until the job is finished. Then create `DELETE {{base_url}}/api/v1/pipelines/{{job_id}}`: expect **204**, provide `X-API-Key`.
 8. Repeat the GET-by-ID: expect **404**.
 9. Repeat the list request **without** `X-API-Key`: expect **401** when authentication is configured.
 
@@ -329,11 +331,13 @@ For Swagger, visit <http://localhost:8080/swagger/> and use the **Authorize** co
 
 ## 10. Known limitations — not failures
 
-- `POST /api/v1/pipelines` intentionally stores **PENDING** jobs; it does not invoke `pipeline.Run()` yet.
-- `/api/v1/pipelines/{id}/progress`, `/results`, `/errors`, and `/cancel` are **not available** in the current HTTP server.
-- Aggregation and file export are **not implemented** in this baseline.
+- `POST /api/v1/pipelines` starts asynchronous processing; poll `/progress` to see terminal state.
+- `/api/v1/pipelines/{id}/progress`, `/results`, `/errors`, and `/cancel` are implemented; see the current verification guide below.
+- Aggregation and file export are implemented in `pipeline.Run()` and API jobs.
 - Stored jobs are in memory and disappear on restart.
 - API source checks do not yet provide full connect-time protections against DNS rebinding/redirect-based SSRF. Do not expose untrusted job execution publicly without further hardening.
 - Docker image build/runtime was **not verified in the development environment**; you need to run the Docker checks on your machine.
 
 For configuration and Docker troubleshooting, see [SETUP.md](SETUP.md).
+
+> For a complete current API verification flow, use [OBSERVABILITY_VERIFICATION.md](OBSERVABILITY_VERIFICATION.md).

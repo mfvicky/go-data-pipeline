@@ -51,20 +51,70 @@ type JobSpec struct {
 	Exports         []ExportConfig      `json:"exports,omitempty"`
 }
 
+// AggregationResult is the output of one aggregation for one group.
+// Count is the number of records contributing to Value.
+type AggregationResult struct {
+	Name      string         `json:"name"`
+	Operation string         `json:"operation"`
+	Field     string         `json:"field,omitempty"`
+	Group     map[string]any `json:"group,omitempty"`
+	Value     float64        `json:"value"`
+	Count     int64          `json:"count"`
+}
+
 // JobStatus is a snapshot of a job's execution state.
 // StartTime stays nil until a runner actually starts the job.
 type JobStatus struct {
-	JobID            string     `json:"job_id"`
-	State            JobState   `json:"state"`
-	RecordsProcessed int64      `json:"records_processed"`
-	RecordsPending   int64      `json:"records_pending"`
-	ErrorCount       int64      `json:"error_count"`
-	PercentComplete  float64    `json:"percent_complete"`
-	CreatedAt        time.Time  `json:"created_at"`
-	StartTime        *time.Time `json:"start_time,omitempty"`
-	EndTime          *time.Time `json:"end_time,omitempty"`
+	JobID            string                  `json:"job_id"`
+	State            JobState                `json:"state"`
+	RecordsProcessed int64                   `json:"records_processed"`
+	RecordsRead      int64                   `json:"records_read"`
+	RecordsFailed    int64                   `json:"records_failed"`
+	RatePerSecond    float64                 `json:"rate_per_second"`
+	StageLatencies   map[string]StageLatency `json:"stage_latencies"`
+	RecordsPending   int64                   `json:"records_pending"`
+	ErrorCount       int64                   `json:"error_count"`
+	PercentComplete  float64                 `json:"percent_complete"`
+	CreatedAt        time.Time               `json:"created_at"`
+	StartTime        *time.Time              `json:"start_time,omitempty"`
+	EndTime          *time.Time              `json:"end_time,omitempty"`
 }
 
+// StageLatency summarizes processing duration for a stage.
+type StageLatency struct {
+	Count               int64   `json:"count"`
+	TotalMilliseconds   float64 `json:"total_milliseconds"`
+	AverageMilliseconds float64 `json:"average_milliseconds"`
+}
+
+// ProgressSnapshot contains concurrent pipeline progress metrics.
+type ProgressSnapshot struct {
+	RecordsRead      int64                   `json:"records_read"`
+	RecordsProcessed int64                   `json:"records_processed"`
+	RecordsFailed    int64                   `json:"records_failed"`
+	ErrorCount       int64                   `json:"error_count"`
+	RecordsPending   int64                   `json:"records_pending"`
+	PercentComplete  float64                 `json:"percent_complete"`
+	RatePerSecond    float64                 `json:"rate_per_second"`
+	StageLatencies   map[string]StageLatency `json:"stage_latencies"`
+}
+
+// JobOutput is stored after a job finishes (successfully or otherwise).
+type JobOutput struct {
+	JobID         string              `json:"job_id"`
+	Records       []Record            `json:"records"`
+	Aggregations  []AggregationResult `json:"aggregations"`
+	Errors        []PipelineError     `json:"errors"`
+	FailedRecords []FailedRecord      `json:"failed_records"`
+}
+
+// FailedRecord keeps the input record and why it was rejected.
+type FailedRecord struct {
+	Record Record        `json:"record"`
+	Error  PipelineError `json:"error"`
+}
+
+// JobDetails joins a saved specification and the corresponding status.
 // JobDetails joins a saved specification and the corresponding status.
 type JobDetails struct {
 	JobID  string    `json:"job_id"`
@@ -87,4 +137,5 @@ type PipelineError struct {
 	RecordID  string    `json:"record_id,omitempty"`
 	Message   string    `json:"message"`
 	Timestamp time.Time `json:"timestamp"`
+	Record    *Record   `json:"record,omitempty"`
 }

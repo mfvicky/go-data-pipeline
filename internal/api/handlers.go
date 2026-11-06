@@ -12,12 +12,14 @@ import (
 	"time"
 
 	"github.com/mfvicky/go-data-pipeline/internal/domain"
+	"github.com/mfvicky/go-data-pipeline/internal/jobs"
 	"github.com/mfvicky/go-data-pipeline/internal/repository"
 	"github.com/mfvicky/go-data-pipeline/internal/security"
 )
 
 type handler struct {
 	repo         *repository.JobRepository
+	manager      *jobs.Manager
 	sourcePolicy *security.SourcePolicy
 }
 
@@ -71,6 +73,10 @@ func (h *handler) create(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if err := h.sourcePolicy.ValidateExports(spec.Exports); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	id, err := newJobID()
 	if err != nil {
@@ -82,12 +88,13 @@ func (h *handler) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not save job")
 		return
 	}
+	h.manager.Start(id, spec)
 	w.Header().Set("Location", "/api/v1/pipelines/"+id)
 	writeJSON(w, http.StatusCreated, struct {
 		JobID   string          `json:"job_id"`
 		State   domain.JobState `json:"state"`
 		Message string          `json:"message"`
-	}{JobID: id, State: domain.StatePending, Message: "Job saved; pipeline execution is not implemented"})
+	}{JobID: id, State: domain.StatePending, Message: "Job accepted for asynchronous processing"})
 }
 
 func (h *handler) list(w http.ResponseWriter, _ *http.Request) {
@@ -115,7 +122,7 @@ func (h *handler) delete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	err := h.repo.DeleteJob(id)
 	if errors.Is(err, repository.ErrRunning) {
-		writeError(w, http.StatusConflict, "cancel a running job before deleting it")
+		writeError(w, http.StatusConflict, "cancel a pending or running job before deleting it")
 		return
 	}
 	if errors.Is(err, repository.ErrNotFound) {
@@ -135,4 +142,87 @@ func newJobID() (string, error) {
 		return "", fmt.Errorf("generate ID: %w", err)
 	}
 	return hex.EncodeToString(bytes[:]), nil
+}
+
+// results is available once execution has reached a terminal state.
+func (h *handler) results(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	status, err := h.repo.GetStatus(id)
+	if errors.Is(err, repository.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "unable to retrieve job")
+		return
+	}
+	if status.State == domain.StatePending || status.State == domain.StateRunning {
+		writeError(w, http.StatusConflict, "results are not ready")
+		return
+	}
+	result, err := h.repo.GetResult(id)
+	if errors.Is(err, repository.ErrResultNotReady) {
+		writeError(w, http.StatusConflict, "results are not ready")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "unable to retrieve results")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *handler) errors(w http.ResponseWriter, r *http.Request) {
+	failures, err := h.repo.GetErrors(r.PathValue("id"))
+	if errors.Is(err, repository.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "unable to retrieve errors")
+		return
+	}
+	failedRecords := make([]domain.FailedRecord, 0)
+	for _, failure := range failures {
+		if failure.Record != nil {
+			failedRecords = append(failedRecords, domain.FailedRecord{Record: *failure.Record, Error: failure})
+		}
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Errors        []domain.PipelineError `json:"errors"`
+		FailedRecords []domain.FailedRecord  `json:"failed_records"`
+		Count         int                    `json:"count"`
+	}{Errors: failures, FailedRecords: failedRecords, Count: len(failures)})
+}
+
+func (h *handler) progress(w http.ResponseWriter, r *http.Request) {
+	status, err := h.repo.GetStatus(r.PathValue("id"))
+	if errors.Is(err, repository.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "unable to retrieve progress")
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (h *handler) cancel(w http.ResponseWriter, r *http.Request) {
+	err := h.manager.Cancel(r.PathValue("id"))
+	if errors.Is(err, repository.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if errors.Is(err, jobs.ErrNotCancellable) {
+		writeError(w, http.StatusConflict, "job is not running")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "unable to cancel job")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, struct {
+		Message string `json:"message"`
+	}{Message: "Cancellation requested"})
 }
