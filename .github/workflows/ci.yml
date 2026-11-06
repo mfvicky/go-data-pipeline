@@ -1,28 +1,114 @@
 name: Go CI
-
 on:
   push:
   pull_request:
-
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: pipeline_test
+          POSTGRES_PASSWORD: pipeline_test_pw
+          POSTGRES_DB: pipeline_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U pipeline_test -d pipeline_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      rabbitmq:
+        image: rabbitmq:4.1.8-management-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: pipeline_test
+          RABBITMQ_DEFAULT_PASS: pipeline_rabbit_test_pw
+        ports: ["5672:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_RABBITMQ_URL: amqp://pipeline_test:pipeline_rabbit_test_pw@127.0.0.1:5672/
+      TEST_POSTGRES_DSN: postgresql://pipeline_test:pipeline_test_pw@127.0.0.1:5432/pipeline_test?sslmode=disable
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version: '1.27.x'
-          cache: true
-      - name: Check formatting
-        run: |
-          test -z "$(gofmt -l $(find . -name '*.go' -not -path './vendor/*'))"
+          cache: false
+      - name: Resolve modules
+        run: go mod tidy
+      - name: Verify formatting
+        run: test -z "$(gofmt -l $(find . -name '*.go' -not -path './vendor/*'))"
       - name: Vet
         run: go vet ./...
-      - name: Test
+      - name: Test, including PostgreSQL persistence
         run: go test ./... -count=1
-      - name: Race detector
-        run: CGO_ENABLED=1 go test -race ./... -count=1
+      - name: Race detector and coverage
+        run: CGO_ENABLED=1 go test -race -cover ./... -count=1
       - name: Build
-        run: go build ./...
+        run: CGO_ENABLED=1 go build ./...
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache: false
+      - name: Resolve modules
+        run: go mod tidy
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+          args: ./...
+  vulnerability-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+      - name: Resolve modules
+        run: go mod tidy
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: Check Go vulnerabilities
+        run: '"$(go env GOPATH)/bin/govulncheck" ./...'
+
+  docker-compose-smoke:
+    runs-on: ubuntu-latest
+    env:
+      API_KEY: github-actions-test-key-only
+      POSTGRES_PASSWORD: github-actions-test-password-only
+      RABBITMQ_PASSWORD: github-actions-test-rabbit-password-only
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate and launch PostgreSQL + API
+        run: |
+          mkdir -p prometheus-secrets
+          printf '%s' "$API_KEY" > prometheus-secrets/api_key
+          docker compose config -q
+          docker compose up --build -d
+      - name: Verify API and database
+        run: |
+          for attempt in $(seq 1 40); do
+            if curl --fail --silent http://127.0.0.1:8080/health >/dev/null; then
+              break
+            fi
+            sleep 3
+          done
+          curl --fail --show-error http://127.0.0.1:8080/ready
+          docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT version FROM schema_migrations"' | grep -q '^2$'
+      - name: Verify RabbitMQ broker is healthy
+        run: docker compose exec -T rabbitmq rabbitmq-diagnostics -q ping
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Stop containers
+        if: always()
+        run: docker compose down

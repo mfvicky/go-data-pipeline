@@ -21,21 +21,50 @@ type SourceConfig struct {
 	Endpoint   string            `json:"endpoint"`
 	RecordPath string            `json:"record_path,omitempty"`
 	Headers    map[string]string `json:"headers,omitempty"`
+	// Adapter normalizes provider payloads to date and metric fields.
+	// Values: covid_csv, coingecko_market_chart, coingecko_simple,
+	// open_meteo_daily, open_meteo_hourly. Omit for legacy sources.
+	Adapter string `json:"adapter,omitempty"`
+	Asset   string `json:"asset,omitempty"` // e.g. bitcoin, required for CoinGecko
+	// Map canonical field names to incoming CSV/JSON column names.
+	FieldMap       map[string]string `json:"field_map,omitempty"`
+	RequiredFields []string          `json:"required_fields,omitempty"`
+	// Per-source transformation rules use the normal transformer syntax.
+	TransformRules map[string]any `json:"transform_rules,omitempty"`
+	// Static enrichment fields are added to every row from this source.
+	EnrichFields map[string]any `json:"enrich_fields,omitempty"`
 }
 
 // AggregationConfig is consumed by the aggregation stage.
-// Operations are count, sum, or avg; GroupBy optionally partitions the result.
+// Operations are count, sum, avg, min, max; GroupBy optionally partitions the result.
 type AggregationConfig struct {
-	Name      string   `json:"name"`
-	Operation string   `json:"operation"`
-	Field     string   `json:"field,omitempty"`
-	GroupBy   []string `json:"group_by,omitempty"`
+	Name       string   `json:"name"`
+	Operation  string   `json:"operation"`
+	SourceKind string   `json:"source_kind,omitempty"` // optional source-specific aggregate filter
+	Field      string   `json:"field,omitempty"`
+	GroupBy    []string `json:"group_by,omitempty"`
 }
 
 // ExportConfig describes a file output.
 type ExportConfig struct {
-	Type string `json:"type"` // csv, json
-	Path string `json:"path"`
+	Type string `json:"type"`           // csv, json
+	Path string `json:"path,omitempty"` // not used by postgres export
+}
+
+// ReportConfig activates a multi-source date join without changing legacy aggregation.
+type ReportConfig struct {
+	Type string `json:"type"` // global_daily
+}
+
+// DailyReportRow merges COVID totals, CoinGecko prices and weather by UTC date.
+// Null fields mean no measurements were available for that date.
+type DailyReportRow struct {
+	Date         string             `json:"date"`
+	Cases        *float64           `json:"cases,omitempty"`
+	Deaths       *float64           `json:"deaths,omitempty"`
+	CryptoPrices map[string]float64 `json:"crypto_prices,omitempty"`
+	TemperatureC *float64           `json:"temperature_c,omitempty"`
+	Sources      []string           `json:"sources"`
 }
 
 // JobSpec is the configuration accepted by POST /api/v1/pipelines.
@@ -49,6 +78,7 @@ type JobSpec struct {
 	TimeoutSeconds  int                 `json:"timeout_seconds,omitempty"`
 	ExportTargets   []string            `json:"export_targets,omitempty"`
 	Exports         []ExportConfig      `json:"exports,omitempty"`
+	Report          *ReportConfig       `json:"report,omitempty"`
 }
 
 // AggregationResult is the output of one aggregation for one group.
@@ -104,6 +134,7 @@ type JobOutput struct {
 	JobID         string              `json:"job_id"`
 	Records       []Record            `json:"records"`
 	Aggregations  []AggregationResult `json:"aggregations"`
+	DailyReport   []DailyReportRow    `json:"daily_report,omitempty"`
 	Errors        []PipelineError     `json:"errors"`
 	FailedRecords []FailedRecord      `json:"failed_records"`
 }
@@ -114,7 +145,6 @@ type FailedRecord struct {
 	Error  PipelineError `json:"error"`
 }
 
-// JobDetails joins a saved specification and the corresponding status.
 // JobDetails joins a saved specification and the corresponding status.
 type JobDetails struct {
 	JobID  string    `json:"job_id"`

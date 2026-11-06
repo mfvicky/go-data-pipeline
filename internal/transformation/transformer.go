@@ -57,7 +57,7 @@ func New(rules map[string]any) (*Transformer, error) {
 		for fields, value := range fields {
 			kind, ok := value.(string)
 			if !ok || strings.TrimSpace(fields) == "" {
-				return nil, fmt.Errorf("type_conversions requrires fields names and type strings")
+				return nil, fmt.Errorf("type_conversions requires fields names and type strings")
 			}
 			switch kind {
 			case "number", "int", "bool", "string":
@@ -109,7 +109,7 @@ func convert(value any, kind string) (any, error) {
 	case "number":
 		number, err := strconv.ParseFloat(text, 64)
 		if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
-			return nil, fmt.Errorf("cannot covert %q to number", text)
+			return nil, fmt.Errorf("cannot convert %q to number", text)
 		}
 		return number, nil
 	case "int":

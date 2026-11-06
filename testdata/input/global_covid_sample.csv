@@ -1,0 +1,6 @@
+Date_reported,Country,New_cases,New_deaths
+2026-11-03,Country A,10,1
+2026-11-03,Country B,5,0
+2026-11-04,Country A,20,2
+2026-11-05,Country B,not-a-number,3
+2026-11-05,Country A,3,0

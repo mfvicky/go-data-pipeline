@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mfvicky/go-data-pipeline/internal/domain"
@@ -18,6 +20,7 @@ type Report struct {
 	JobID         string                     `json:"job_id"`
 	Records       []domain.Record            `json:"records"`
 	Aggregations  []domain.AggregationResult `json:"aggregations"`
+	DailyReport   []domain.DailyReportRow    `json:"daily_report,omitempty"`
 	Errors        []domain.PipelineError     `json:"errors"`
 	FailedRecords []domain.FailedRecord      `json:"failed_records"`
 }
@@ -30,6 +33,9 @@ func Write(ctx context.Context, target domain.ExportConfig, report Report) error
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if target.Type == "postgres" {
+		return writePostgres(ctx, report)
 	}
 	if target.Path == "" {
 		return fmt.Errorf("export path is required")
@@ -54,7 +60,11 @@ func Write(ctx context.Context, target domain.ExportConfig, report Report) error
 		encoder.SetIndent("", "  ")
 		err = encoder.Encode(report)
 	case "csv":
-		err = writeCSV(ctx, file, report.Records)
+		if len(report.DailyReport) > 0 {
+			err = writeDailyCSV(ctx, file, report.DailyReport)
+		} else {
+			err = writeCSV(ctx, file, report.Records)
+		}
 	}
 	if err != nil {
 		_ = file.Close()
@@ -128,4 +138,51 @@ func valueString(value any) (string, error) {
 		}
 		return string(encoded), nil
 	}
+}
+
+// writeDailyCSV uses stable date/metric columns and one column per crypto asset.
+func writeDailyCSV(ctx context.Context, file *os.File, rows []domain.DailyReportRow) error {
+	assetsSet := map[string]bool{}
+	for _, row := range rows {
+		for asset := range row.CryptoPrices {
+			assetsSet[asset] = true
+		}
+	}
+	assets := make([]string, 0, len(assetsSet))
+	for asset := range assetsSet {
+		assets = append(assets, asset)
+	}
+	sort.Strings(assets)
+	writer := csv.NewWriter(file)
+	header := []string{"date", "cases", "deaths", "temperature_c", "sources"}
+	for _, asset := range assets {
+		header = append(header, asset+"_usd")
+	}
+	if err := writer.Write(header); err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		values := []string{row.Date, optionalFloat(row.Cases), optionalFloat(row.Deaths), optionalFloat(row.TemperatureC), strings.Join(row.Sources, "|")}
+		for _, asset := range assets {
+			if price, ok := row.CryptoPrices[asset]; ok {
+				values = append(values, strconv.FormatFloat(price, 'f', -1, 64))
+			} else {
+				values = append(values, "")
+			}
+		}
+		if err := writer.Write(values); err != nil {
+			return err
+		}
+	}
+	writer.Flush()
+	return writer.Error()
+}
+func optionalFloat(value *float64) string {
+	if value == nil {
+		return ""
+	}
+	return strconv.FormatFloat(*value, 'f', -1, 64)
 }

@@ -1,26 +1,23 @@
 package api
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
-	"time"
+	"strconv"
 
 	"github.com/mfvicky/go-data-pipeline/internal/domain"
 	"github.com/mfvicky/go-data-pipeline/internal/jobs"
+	"github.com/mfvicky/go-data-pipeline/internal/middleware"
 	"github.com/mfvicky/go-data-pipeline/internal/repository"
-	"github.com/mfvicky/go-data-pipeline/internal/security"
+	"github.com/mfvicky/go-data-pipeline/internal/services"
 )
 
 type handler struct {
-	repo         *repository.JobRepository
-	manager      *jobs.Manager
-	sourcePolicy *security.SourcePolicy
+	service services.JobService
 }
 
 type apiError struct {
@@ -56,7 +53,7 @@ func (h *handler) create(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusRequestEntityTooLarge, "job spec exceeds 1 MiB")
 			return
 		}
-		writeError(w, http.StatusBadRequest, "invalid JSON job spec: "+err.Error())
+		writeError(w, http.StatusBadRequest, "invalid JSON job specification")
 		return
 	}
 	var extra any
@@ -64,31 +61,28 @@ func (h *handler) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "request must contain exactly one JSON object")
 		return
 	}
-	if err := domain.ValidateJobSpec(spec); err != nil {
+	id, err := h.service.Create(r.Context(), spec, middleware.GetRequestID(r.Context()))
+	if errors.Is(err, services.ErrInvalidSpec) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if h.sourcePolicy != nil {
-		if err := h.sourcePolicy.Validate(r.Context(), spec.Sources); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		if err := h.sourcePolicy.ValidateExports(spec.Exports); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
+	if errors.Is(err, services.ErrDispatchPending) {
+		w.Header().Set("Location", "/api/v1/pipelines/"+id)
+		writeJSON(w, http.StatusServiceUnavailable, struct {
+			Error string          `json:"error"`
+			JobID string          `json:"job_id"`
+			State domain.JobState `json:"state"`
+		}{Error: "job saved; RabbitMQ dispatch will be retried", JobID: id, State: domain.StatePending})
+		return
 	}
-	id, err := newJobID()
+	if errors.Is(err, jobs.ErrQueueFull) || errors.Is(err, jobs.ErrShuttingDown) {
+		writeError(w, http.StatusServiceUnavailable, "job queue unavailable")
+		return
+	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not generate job identifier")
+		writeError(w, http.StatusInternalServerError, "could not create or enqueue job")
 		return
 	}
-	status := domain.JobStatus{JobID: id, State: domain.StatePending, CreatedAt: time.Now().UTC()}
-	if err := h.repo.Create(id, spec, status); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not save job")
-		return
-	}
-	h.manager.Start(id, spec)
 	w.Header().Set("Location", "/api/v1/pipelines/"+id)
 	writeJSON(w, http.StatusCreated, struct {
 		JobID   string          `json:"job_id"`
@@ -97,16 +91,33 @@ func (h *handler) create(w http.ResponseWriter, r *http.Request) {
 	}{JobID: id, State: domain.StatePending, Message: "Job accepted for asynchronous processing"})
 }
 
-func (h *handler) list(w http.ResponseWriter, _ *http.Request) {
-	jobs := h.repo.ListJobs()
+func (h *handler) list(w http.ResponseWriter, r *http.Request) {
+	jobs := h.service.List()
+	total := len(jobs)
+	offset, limit, err := paging(r, 50)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if offset > total {
+		offset = total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	jobs = jobs[offset:end]
 	writeJSON(w, http.StatusOK, struct {
-		Jobs  []*domain.JobStatus `json:"jobs"`
-		Count int                 `json:"count"`
-	}{Jobs: jobs, Count: len(jobs)})
+		Jobs   []*domain.JobStatus `json:"jobs"`
+		Count  int                 `json:"count"`
+		Total  int                 `json:"total"`
+		Offset int                 `json:"offset"`
+		Limit  int                 `json:"limit"`
+	}{Jobs: jobs, Count: len(jobs), Total: total, Offset: offset, Limit: limit})
 }
 
 func (h *handler) get(w http.ResponseWriter, r *http.Request) {
-	job, err := h.repo.GetJob(r.PathValue("id"))
+	job, err := h.service.Get(r.PathValue("id"))
 	if errors.Is(err, repository.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "job not found")
 		return
@@ -120,7 +131,7 @@ func (h *handler) get(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) delete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	err := h.repo.DeleteJob(id)
+	err := h.service.Delete(id)
 	if errors.Is(err, repository.ErrRunning) {
 		writeError(w, http.StatusConflict, "cancel a pending or running job before deleting it")
 		return
@@ -136,31 +147,14 @@ func (h *handler) delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func newJobID() (string, error) {
-	var bytes [16]byte
-	if _, err := rand.Read(bytes[:]); err != nil {
-		return "", fmt.Errorf("generate ID: %w", err)
-	}
-	return hex.EncodeToString(bytes[:]), nil
-}
-
 // results is available once execution has reached a terminal state.
 func (h *handler) results(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	status, err := h.repo.GetStatus(id)
+	result, err := h.service.Result(id)
 	if errors.Is(err, repository.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "job not found")
 		return
 	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "unable to retrieve job")
-		return
-	}
-	if status.State == domain.StatePending || status.State == domain.StateRunning {
-		writeError(w, http.StatusConflict, "results are not ready")
-		return
-	}
-	result, err := h.repo.GetResult(id)
 	if errors.Is(err, repository.ErrResultNotReady) {
 		writeError(w, http.StatusConflict, "results are not ready")
 		return
@@ -169,11 +163,34 @@ func (h *handler) results(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "unable to retrieve results")
 		return
 	}
+	if raw := r.URL.Query().Get("offset"); raw != "" || r.URL.Query().Get("limit") != "" {
+		offset, limit, parseErr := paging(r, 100)
+		if parseErr != nil {
+			writeError(w, http.StatusBadRequest, parseErr.Error())
+			return
+		}
+		total := len(result.Records)
+		if offset > total {
+			offset = total
+		}
+		end := offset + limit
+		if end > total {
+			end = total
+		}
+		result.Records = result.Records[offset:end]
+		writeJSON(w, http.StatusOK, struct {
+			*domain.JobOutput
+			TotalRecords int `json:"total_records"`
+			Offset       int `json:"offset"`
+			Limit        int `json:"limit"`
+		}{result, total, offset, limit})
+		return
+	}
 	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *handler) errors(w http.ResponseWriter, r *http.Request) {
-	failures, err := h.repo.GetErrors(r.PathValue("id"))
+	failures, err := h.service.Errors(r.PathValue("id"))
 	if errors.Is(err, repository.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "job not found")
 		return
@@ -196,7 +213,7 @@ func (h *handler) errors(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) progress(w http.ResponseWriter, r *http.Request) {
-	status, err := h.repo.GetStatus(r.PathValue("id"))
+	status, err := h.service.Progress(r.PathValue("id"))
 	if errors.Is(err, repository.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "job not found")
 		return
@@ -209,7 +226,7 @@ func (h *handler) progress(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) cancel(w http.ResponseWriter, r *http.Request) {
-	err := h.manager.Cancel(r.PathValue("id"))
+	err := h.service.Cancel(r.PathValue("id"))
 	if errors.Is(err, repository.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "job not found")
 		return
@@ -225,4 +242,24 @@ func (h *handler) cancel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, struct {
 		Message string `json:"message"`
 	}{Message: "Cancellation requested"})
+}
+
+func paging(r *http.Request, fallback int) (int, int, error) {
+	offset := 0
+	limit := fallback
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			return 0, 0, fmt.Errorf("offset must be nonnegative")
+		}
+		offset = n
+	}
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 1000 {
+			return 0, 0, fmt.Errorf("limit must be 1-1000")
+		}
+		limit = n
+	}
+	return offset, limit, nil
 }

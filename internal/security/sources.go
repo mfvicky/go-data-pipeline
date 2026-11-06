@@ -17,6 +17,7 @@ type SourcePolicy struct {
 	InputDir            string
 	OutputDir           string
 	AllowPrivateSources bool
+	AllowedHosts        []string
 }
 
 func (p SourcePolicy) Validate(ctx context.Context, sources []domain.SourceConfig) error {
@@ -73,6 +74,9 @@ func (p SourcePolicy) validateURL(ctx context.Context, raw string) error {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil {
 		return fmt.Errorf("only http(s) URLs without credentials are allowed")
 	}
+	if len(p.AllowedHosts) > 0 && !allowedHost(u.Hostname(), p.AllowedHosts) {
+		return fmt.Errorf("source hostname is not in SOURCE_HOST_ALLOWLIST")
+	}
 	if p.AllowPrivateSources {
 		return nil
 	}
@@ -111,6 +115,16 @@ func (p SourcePolicy) ValidateExports(targets []domain.ExportConfig) error {
 	if len(targets) == 0 {
 		return nil
 	}
+	fileExports := false
+	for _, target := range targets {
+		if target.Type != "postgres" {
+			fileExports = true
+			break
+		}
+	}
+	if !fileExports {
+		return nil
+	}
 	if p.OutputDir == "" {
 		return fmt.Errorf("output directory is not configured")
 	}
@@ -122,6 +136,9 @@ func (p SourcePolicy) ValidateExports(targets []domain.ExportConfig) error {
 		return fmt.Errorf("create output directory: %w", err)
 	}
 	for i, target := range targets {
+		if target.Type == "postgres" {
+			continue
+		}
 		path, err := filepath.Abs(target.Path)
 		if err != nil {
 			return fmt.Errorf("exports[%d].path: %w", i, err)
@@ -146,4 +163,20 @@ func (p SourcePolicy) ValidateExports(targets []domain.ExportConfig) error {
 		}
 	}
 	return nil
+}
+
+// Allowed hosts match exact names or explicit *.suffix patterns; plain suffixes
+// never match subdomains to avoid example.com.evil.com bypasses.
+func allowedHost(host string, patterns []string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	for _, item := range patterns {
+		item = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(item), "."))
+		if item == host {
+			return true
+		}
+		if strings.HasPrefix(item, "*.") && strings.HasSuffix(host, item[1:]) && host != item[2:] {
+			return true
+		}
+	}
+	return false
 }

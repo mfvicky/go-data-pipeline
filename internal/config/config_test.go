@@ -48,3 +48,34 @@ func TestInvalidConfiguration(t *testing.T) {
 		t.Fatal("expected invalid port error")
 	}
 }
+
+func TestPostgresConfiguration(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("HOST", "127.0.0.1")
+	t.Setenv("STORAGE_DRIVER", "postgres")
+	t.Setenv("DATABASE_URL", "postgresql://user:secret@localhost:5433/pipeline?sslmode=disable")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.StorageDriver != "postgres" || cfg.DatabaseURL == "" {
+		t.Fatalf("unexpected config: %+v", cfg)
+	}
+	t.Setenv("STORAGE_DRIVER", "postgres")
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("PGHOST", "")
+	if _, err := Load(); err == nil {
+		t.Fatal("missing PostgreSQL connection settings")
+	}
+}
+
+func TestLoadCORSOrigins(t *testing.T) {
+	t.Setenv("CORS_ORIGINS", "https://one.example, https://two.example")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.CORSOrigins) != 2 || cfg.CORSOrigins[0] != "https://one.example" || cfg.CORSOrigins[1] != "https://two.example" {
+		t.Fatalf("unexpected origins: %v", cfg.CORSOrigins)
+	}
+}

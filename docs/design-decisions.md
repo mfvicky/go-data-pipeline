@@ -1,11 +1,26 @@
-# Design choices and trade-offs
+# Design decisions and trade-offs — current version
 
-The project uses Go's standard `net/http` package and packages grouped by responsibility. This keeps learning and debugging straightforward without introducing a framework or unnecessary service/interface layers.
+## Why Go channels and worker pools?
 
-CSV, JSON and HTTP API readers convert input into `domain.Record`. A runner fans out source reads and uses configurable validation/transformation goroutine pools connected by typed channels. `context.Context` controls cancellation; producers own channel closure. Results and stage errors are returned to the runner's caller. The HTTP API now launches runner jobs asynchronously and stores status, results, and errors in the in-memory repository.
+Ingestion, validation and transformation have distinct responsibilities and exchange `domain.Record` values using typed channels. The source pool and the validation/transformation pools have configurable sizes; a single fan-in accumulator consumes transformed records as they arrive. Channels provide bounded backpressure, while `sync.WaitGroup` ensures only producers close their respective output channels. Context cancellation and timeouts stop producers and workers cooperatively.
 
-The job repository uses a mutex-protected in-memory map. This is convenient for development but jobs disappear at restart and are not shared across replicas. A persistent database and transactional job lifecycle will be needed for durable production workloads.
+## Why RabbitMQ with PostgreSQL/GORM?
 
-Configuration comes from environment variables. Production and non-loopback listeners require an API key. Middleware supplies request IDs, structured logs, panic recovery, rate limiting and basic response hardening. Job-submission validation restricts local source paths and rejects private/reserved source IPs when configured. These are defense-in-depth controls, not complete SSRF protection: before enabling API-triggered execution, outbound HTTP connections and redirects must be restricted at dial time to prevent DNS rebinding and redirect bypasses.
+PostgreSQL is the system of record for job specifications, statuses, errors, individual results and date-joined reports. GORM uses pgx; no native libpq runtime is needed. Numbered SQL migrations version schema updates. RabbitMQ transports confirmed, persistent job-ID messages and manual consumer acknowledgements, so job execution is decoupled from HTTP request latency. On restart, pending jobs are re-dispatched; duplicate deliveries are checked against persisted terminal states. This design avoids requiring a full multi-node message-processing platform for the assignment.
 
-The Docker build uses a Go builder stage and a non-root distroless runtime. Swagger documents existing HTTP endpoints only. Integration, load and external-service tests should be expanded as the API starts running jobs.
+**Trade-off:** the database write and broker publication are not one transaction. A database-backed pending-job replay path mitigates failures but is not equivalent to a transactional outbox. The repository caches state in process; do not run multiple API replicas without distributed locking and recovery design. Queue delivery is at least once rather than exactly once.
+
+## Why both file and database export?
+
+File exports provide portable CSV/JSON artifacts; a dedicated report table supports querying by job and date. Files use temporary-write-then-rename within each job's output folder and a persistent Docker volume. GORM report writes occur inside a transaction and cascade on job deletion. Database and filesystem changes cannot be committed atomically together; cleanup errs on the side of preserving the job record when file removal fails.
+
+## Why opt-in provider adapters?
+
+The existing generic CSV/JSON/API pipeline remains useful for arbitrary data. Explicit adapters normalize the COVID CSV, CoinGecko historical prices and Open-Meteo weather formats into a consistent UTC daily schema. Per-source mapping, required fields, type conversions and static enrichment handle heterogeneity before the shared validator. Missing cross-source dates appear as absent fields; the report does not fabricate measurements.
+
+## Limitations intentionally retained
+
+- The API persists full processed records, so result RAM/JSONB size grows with the job. Source streams, aggregation buckets and file writes do not make the entire system unlimited-memory.
+- The bundled data is synthetic; live providers may change schemas, impose rate limits or require authentication.
+- A source limit (currently 20 MiB per source) prevents unbounded reads; very large real-world datasets require partitioning or a configurable streaming storage tier.
+- Network egress firewall enforcement, TLS certificate issuance, multi-tenant authorization, transactional outbox and shared object storage are deployment-scale improvements, not included in this assignment implementation.

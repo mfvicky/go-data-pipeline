@@ -19,3 +19,4 @@ coverage*
 **/output
 **/*.test
 **/*.out
+/prometheus-secrets/

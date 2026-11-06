@@ -1,238 +1,115 @@
-# Go Data Processing Pipeline
+# Go Data Processing Pipeline — GORM + RabbitMQ + Global Daily Report
 
-Concurrent CSV/JSON/HTTP ingestion, record validation, transformation, aggregation and CSV/JSON export, and a REST API for storing pipeline jobs. Uses Go 1.23+ and `net/http` without a web framework.
+Concurrent Go REST API for CSV, JSON and HTTP ingestion, schema/business validation, transformation, grouped aggregation, JSON/CSV export, status, cancellation, errors and results. PostgreSQL stores job snapshots using **GORM + pgx**; **RabbitMQ** delivers durable job-ID messages to bounded worker consumers. **Prometheus** scrapes `/metrics`. The existing API paths remain the same as in `docs/openapi.yaml`; transient RabbitMQ publication failures additionally return 503 with the persisted job ID.
 
-**Current behavior:** `POST /api/v1/pipelines` creates a job and launches the pipeline asynchronously. Poll the progress endpoint until `COMPLETED`, `FAILED`, or `CANCELLED`. Job results and errors are stored in memory only.
+## New: Global Daily Report (three-source concurrency example)
 
-## Requirements
+The pipeline now supports **source-specific adapters and required-field checks**
+for COVID-style CSV, CoinGecko prices and Open-Meteo daily/hourly weather. Set
+`"report":{"type":"global_daily"}` to merge records by date. The job result
+includes `daily_report`; JSON and CSV can export that report, and a dedicated
+`postgres` export stores rows in the GORM-managed `pipeline_daily_reports`
+table. A bounded channel feeds an incremental single-goroutine aggregation stage while worker pools run. A dedicated export goroutine writes file/DB targets after aggregation completes.
 
-- Go 1.23 or newer (Go 1.27 is supported).
-- Optional: Docker with Compose.
-- GCC/CGO only for `go test -race ./...` on Windows.
+Try `examples/global_daily_sample_job.json` and run
+`examples/verify_global_daily.ps1` after starting Docker. The bundled samples
+are **synthetic deterministic fixtures**; one intentionally invalid COVID row
+shows source-level error collection without stopping the job. Online CoinGecko
+and Open-Meteo sources are illustrated in `examples/global_daily_live_job.json`
+(provider limits and connectivity apply). Full instructions and join semantics:
+[docs/GLOBAL_DAILY_REPORT.md](docs/GLOBAL_DAILY_REPORT.md).
 
-## Run locally
+## Stack
 
-From the project root:
+- Go 1.27 for the Docker build (Go 1.27 is recommended). GORM/pgx does not require libpq or CGO. Race detection on Windows still needs a C compiler.
+- PostgreSQL 17 (`postgres_data` persistent Docker volume); ORM migrations in `internal/repository/migrations/`. Schema version 3 includes `pipeline_daily_reports` and keeps the **existing** `jobs(id,data JSONB)` and `schema_migrations` tables.
+- RabbitMQ 4.1 (`rabbitmq_data` volume), publisher confirms, persistent messages, manual ACK after status/result persistence, prefetch=1, quorum queue with a 10-attempt redelivery cap, dead-letter queue for malformed/exhausted messages, consumer reconnect.
+- 1 API replica, N concurrent job consumers, JSON logging with job ID and request ID, API key, rate limiting, security headers, CORS, restricted file inputs, source allowlist, SSRF defense.
 
-```bash
+## Quick start in Windows PowerShell
+
+1. Create `.env` from `.env.example` and set **different strong secrets** for `POSTGRES_PASSWORD`, `RABBITMQ_PASSWORD`, `API_KEY`. Make RabbitMQ credentials URL-safe (letters/numbers/`-`/`_`) or URI-encode them in an AMQP URL. When changing a credential on an initialized volume, update the existing database/broker credential as well; an environment change alone does not rotate existing users.
+2. Create `prometheus-secrets/api_key` containing the `API_KEY` value **without quotes**; this file is intentionally absent from the submitted ZIP and ignored by Git.
+3. Run:
+
+```powershell
 go mod tidy
-go run ./cmd/server
-```
-
-The default server listens only on `127.0.0.1:8080`. For authenticated local testing:
-
-```bash
-export API_KEY='replace-with-a-long-random-secret'
-go run ./cmd/server
-```
-
-Using the same Git Bash terminal to set environment variables and start the server is important. Environment changes in one shell do not apply to other shells.
-
-## Configuration
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `APP_ENV` | `development` | `development` or `production` |
-| `HOST` | `127.0.0.1` | Listener address |
-| `PORT` | `8080` | Listener port |
-| `API_KEY` | empty | `X-API-Key` value; required in production or with non-loopback `HOST` |
-| `INPUT_DIR` | `testdata/input` | Directory from which API job specs can reference local files |
-| `ALLOW_PRIVATE_SOURCES` | `true` in development, `false` in production | Whether job specs may reference private network URLs |
-| `RATE_LIMIT_PER_MINUTE` | `120` | Request limit per remote IP for API endpoints |
-| `READ_HEADER_TIMEOUT` | `5s` | Header timeout |
-| `READ_TIMEOUT` | `15s` | Request timeout |
-| `WRITE_TIMEOUT` | `30s` | Response timeout |
-| `IDLE_TIMEOUT` | `60s` | Keep-alive timeout |
-| `SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown deadline |
-
-See `.env.example`. The Go application reads *environment variables*, not `.env` files automatically. Load settings using your shell, container environment or deployment manager. Do not commit API keys.
-
-## Aggregation and export
-
-`pipeline.Run(ctx, jobID, spec)` now executes `aggregations` and `exports` from `JobSpec` after validation and transformation. Aggregation supports `count`, `sum`, and `avg`; `group_by` accepts multiple field names. Numeric fields can be JSON numbers or numeric CSV strings. Bad numeric/group values are added to `RunResult.Errors` for the aggregation stage and excluded from that aggregation. Ungrouped empty aggregates return value and count of zero; grouped empty aggregates produce no rows.
-
-`RunResult.Aggregations` holds results (`name`, `operation`, optional `field` and `group`, `value`, `count`). A JSON export contains `job_id`, `records`, `aggregations`, and `errors`. A CSV export writes the transformed records, with metadata columns `record_id`, `source`, and `timestamp` followed by sorted data columns. Use `exports` with explicit paths; the legacy `export_targets` field does not create files.
-
-`examples/create_job.json` shows the configuration. Verify execution and generated files through `go test ./internal/pipeline -run TestRunAggregationAndExports -v`. **The HTTP POST endpoint now runs these stages asynchronously.** The HTTP API confines export paths to `output/`. Use trusted source URLs until connect-time HTTP DNS-rebinding and redirect checks are implemented.
-
-## HTTP API
-
-| Method | Path | Status |
-| --- | --- | --- |
-| GET | `/health` | Available, public |
-| GET | `/openapi.yaml` | Available, public |
-| GET | `/swagger/` | Available, public |
-| POST | `/api/v1/pipelines` | Creates and starts an asynchronous job |
-| GET | `/api/v1/pipelines/{id}/progress` | Status, counters, throughput and stage latencies |
-| GET | `/api/v1/pipelines/{id}/results` | Records, aggregations, errors, failed records (terminal jobs only) |
-| GET | `/api/v1/pipelines/{id}/errors` | Live failures and failed records |
-| POST | `/api/v1/pipelines/{id}/cancel` | Requests cancellation (202); poll progress |
-| GET | `/api/v1/pipelines` | Available; lists saved jobs |
-| GET | `/api/v1/pipelines/{id}` | Available; retrieves job details |
-| DELETE | `/api/v1/pipelines/{id}` | Available; deletes non-running jobs |
-
-All `/api/v1/pipelines` routes require `X-API-Key` **when the server has `API_KEY` set**. Production requires it. Health and documentation routes are public.
-
-### Example requests
-
-```bash
-curl -i http://localhost:8080/health
-curl -i http://localhost:8080/openapi.yaml
-
-curl -i -X POST http://localhost:8080/api/v1/pipelines \
-  -H 'Content-Type: application/json' \
-  -H "X-API-Key: ${API_KEY}" \
-  -d '{"sources":[{"name":"customers_csv","type":"csv","endpoint":"testdata/input/customers.csv"}]}'
-
-curl -i -H "X-API-Key: ${API_KEY}" http://localhost:8080/api/v1/pipelines
-curl -i -H "X-API-Key: ${API_KEY}" http://localhost:8080/api/v1/pipelines/YOUR_JOB_ID
-curl -i -X DELETE -H "X-API-Key: ${API_KEY}" http://localhost:8080/api/v1/pipelines/YOUR_JOB_ID
-```
-
-Expected create status: **201**, initially `PENDING`. The job then transitions through `RUNNING` to `COMPLETED`/`FAILED`/`CANCELLED`. Results return **409** until the job finishes. List/details: **200**, delete: **204** for finished jobs, missing job: **404**, invalid spec: **400**, wrong API key: **401**, throttled: **429**.
-
-## Swagger / OpenAPI
-
-Open [http://localhost:8080/swagger/](http://localhost:8080/swagger/) and use **Authorize** to supply an API key if configured. The OpenAPI 3 specification is at `docs/openapi.yaml` and served at `/openapi.yaml`. Swagger UI uses version-pinned assets from jsDelivr, so its interactive page needs browser access to that CDN; the YAML endpoint works offline.
-
-## CSV / JSON / API ingestion CLI
-
-```bash
-go run ./cmd/ingest-demo -type csv -endpoint testdata/input/customers.csv
-go run ./cmd/ingest-demo -type json -endpoint testdata/input/customers.json
-go run ./cmd/ingest-demo -type json -endpoint testdata/input/nested.json -record-path data.records
-go run ./cmd/ingest-demo -type api -endpoint https://jsonplaceholder.typicode.com/posts -timeout 60s
-```
-
-The sample CSV contains 3 records, the customer JSON contains 2 records, and nested JSON contains 2 records. Remote HTTP may fail if the service or network is unavailable.
-
-## Docker
-
-From the project root, create a local `.env` file containing a strong random `API_KEY`. In Git Bash (with OpenSSL):
-
-```bash
-printf 'API_KEY=%s\n' "$(openssl rand -hex 32)" > .env
+make ci
 docker compose up --build -d
 docker compose ps
-curl -i http://localhost:8080/health
+curl.exe http://localhost:8080/health
+curl.exe http://localhost:8080/ready
+curl.exe "http://localhost:9090/api/v1/query?query=up"
 ```
 
-Read your API key from the `.env` file for authenticated requests. Stop the service with `docker compose down`. Compose maps container port 8080 to your machine's loopback address only. The container is non-root, read-only and has its input dataset packaged under `/app/testdata/input`.
+If you have already set up Windows Git Bash, run `make ci` there; Docker Compose can run from PowerShell. **Do not use `docker compose down -v`** unless you intentionally want to delete PostgreSQL/RabbitMQ data.
 
-The image uses a multi-stage Go build and a minimal distroless runtime. A working Docker engine is required; CI currently checks Go code, not Docker image builds.
+The project includes the existing `go.sum`. Run `go mod tidy` after applying updates so dependency checksums remain in sync; commit any resulting changes.
 
-## Progress, results, errors and cancellation
+## Endpoints
 
-`POST /api/v1/pipelines` runs the job in the background. Status starts as `PENDING` and may immediately transition to `RUNNING`. `GET /api/v1/pipelines/{id}/progress` returns `records_read`, `records_processed`, `records_failed`, `records_pending`, `error_count`, `rate_per_second`, `percent_complete`, and `stage_latencies` (count, total milliseconds and average milliseconds per stage). Ingestion latency is measured per **source**, validation/transformation per **record**, aggregation per **batch**, and export per **file**. `records_processed` counts transformed records that passed validation/transformation; numeric aggregation errors are counted separately without rejecting those records.
+| Method | URL | Description |
+|---|---|---|
+| GET | `/health`, `/ready` | Health and DB readiness |
+| POST | `/api/v1/pipelines` | Create and enqueue an async job |
+| GET | `/api/v1/pipelines` | List statuses with pagination |
+| GET | `/api/v1/pipelines/{id}` | Read spec + status |
+| GET | `/api/v1/pipelines/{id}/progress` | Progress |
+| GET | `/api/v1/pipelines/{id}/results` | Records and aggregations |
+| GET | `/api/v1/pipelines/{id}/errors` | Errors |
+| PATCH | `/api/v1/pipelines/{id}/cancel` | Cancel a pending/running job (required assignment contract) |
+| POST | `/api/v1/pipelines/{id}/cancel` | Deprecated compatibility alias for older Postman collections |
+| DELETE | `/api/v1/pipelines/{id}` | Delete terminal job, its GORM data/report rows, and job-owned file exports |
+| GET | `/metrics` | Prometheus text endpoint (API key) |
+| GET | `/docs/openapi.yaml`, `/swagger` | API definition / docs |
 
-`GET /api/v1/pipelines/{id}/results` returns data only after a terminal state; before then it responds with `409`. The `errors` endpoint works while running and includes the original record when available. The `cancel` endpoint responds `202` when cancellation is requested; poll progress until it becomes `CANCELLED`. Finished jobs return `409` to cancellation requests. Partial results remain queryable for failed/cancelled jobs. Unexpected source failures are collected while other sources continue. A nonfatal record rejection does not cause the whole job to fail.
+Protected endpoints use `X-API-Key: <API_KEY>`. Example payloads are in `examples/`; Postman collection in `examples/postman_collection.json`.
 
-### Smoke verification
+## Environment
 
-With the server running (`make run`) and optional `API_KEY` configured, run in a **second** Git Bash terminal:
-
-```bash
-BASE_URL=http://127.0.0.1:8080 bash scripts/smoke.sh
-```
-
-The smoke script submits CSV/JSON input, polls progress, reads results and errors, and checks both completed output and failed-record collection. `API_KEY` can be supplied in the testing terminal. See [Observability Verification](docs/OBSERVABILITY_VERIFICATION.md) for manual cURL commands and expected codes.
-
-## Tests and development checks
-
-```bash
-go fmt ./...
-go vet ./...
-go test ./... -count=1
-go test -race ./... -count=1
-go build ./...
-```
-
-`go test -race` needs CGO and a C compiler. On Windows Git Bash with GCC from MSYS2 UCRT64:
-
-```bash
-export PATH="/c/msys64/ucrt64/bin:$PATH"
-export CGO_ENABLED=1
-export CC=gcc
-go test -race ./...
-```
-
-CI runs formatting checks, vet, unit/integration tests, race detection and builds on Linux.
-
-## Developer Tooling
-
-
-This project uses a Makefile, golangci-lint, Git hooks, and Postman for development and testing.
-
-
-### Makefile Commands
-
-
-| Command | Description |
+| Variable | Meaning |
 |---|---|
-| `make help` | List available commands |
-| `make run` | Start the API server |
-| `make fmt` | Format Go code |
-| `make fmt-check` | Check formatting without changing files |
-| `make vet` | Run Go static analysis |
-| `make lint` | Run golangci-lint |
-| `make test` | Run all tests |
-| `make test-race` | Check for data races |
-| `make build` | Build the project |
-| `make check` | Run formatting, vet, lint, tests, and build |
-| `make ci` | Run all checks including race tests |
-| `make hooks` | Enable local Git hooks |
+| `STORAGE_DRIVER` | `memory` for standalone tests, `postgres` for Docker |
+| `QUEUE_DRIVER` | `memory` for standalone tests, `rabbitmq` for Docker |
+| `DATABASE_URL` or `PG*` | PostgreSQL DSN or PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE |
+| `RABBITMQ_URL` | AMQP URL (default Compose provides it) |
+| `RABBITMQ_QUEUE` | Durable queue name, default `pipeline.jobs` |
+| `MAX_CONCURRENT_JOBS` | Number of worker consumers (default 5) |
+| `JOB_QUEUE_CAPACITY` | In-memory queue capacity (memory mode only) |
+| `JOB_RETENTION` | Terminal job expiry, default 24h |
+| `INPUT_DIR`, `SOURCE_HOST_ALLOWLIST`, `ALLOW_PRIVATE_SOURCES` | Source security settings |
+| `API_KEY`, `CORS_ORIGINS`, `RATE_LIMIT_PER_MINUTE` | API controls |
+| `LOG_LEVEL`, `LOG_FORMAT` | Structured logging controls |
+| `PIPELINE_DOMAIN` | Optional Caddy HTTPS profile hostname |
 
+## Runtime verification
 
-### Git Hooks
-
-Enable hooks once per repository:
-
-```bash
-make hooks
-```
-The pre-commit hook checks formatting, vet, lint, and tests.
-
-Commit messages follow Conventional Commits:
-
-```bash
-git commit -m "feat(pipeline): add worker pools"
-git commit -m "fix(api): handle invalid requests"
-git commit -m "test(validation): add validation tests"
+```powershell
+docker compose exec -T postgres psql -U pipeline -d pipeline -c "SELECT version FROM schema_migrations ORDER BY version"
+docker compose exec -T rabbitmq rabbitmqctl list_queues name messages consumers
+docker compose logs --tail=50 api
 ```
 
-### Postman
+Open RabbitMQ management: http://localhost:15672 (configured RabbitMQ user/password), Prometheus: http://localhost:9090. To enable Caddy HTTPS after you configure real DNS, replace `PIPELINE_DOMAIN` and use `docker compose --profile tls up -d`; the default localhost API binding is intended for development. A public HTTPS setup needs ports 80/443 accessible and a valid domain.
 
-Import `examples/postman_collection.json` into Postman.
+## Architecture and guarantees
 
-Collection variables:
-- `baseUrl`: `http://localhost:8080`
-- `apiKey`: API_KEY from your environment
-- `jobId`: Automatically populated when creating a job
+`POST -> services.JobService -> GORM (spec/status PENDING) -> RabbitMQ (persistent confirmed job ID) -> bounded consumer -> jobs.Manager -> pipeline.Run -> GORM (result/final state) -> ACK`. The pipeline uses concurrent ingestion and validation/transformation worker pools with backpressure. Errors are collected and cancellation propagates through contexts. Aggregation is incremental, but job output/result persistence still buffers records in memory; very large jobs are not fully streaming.
 
+On API restart, persisted PENDING/RUNNING jobs are reset to PENDING and republished by ID. A one-minute recovery dispatcher also retries pending IDs after a temporary broker outage. If a publish fails, the API returns HTTP 503 with the saved `job_id` and the record stays PENDING for retry. Duplicate IDs are ignored after reaching a terminal state. **Limitations:** This example is deliberately single-API-replica: repository state is cached locally, there is no distributed lease/fencing, transactional outbox, production-grade external object storage for exported files, or multi-tenant authorization. Local Docker file exports use the persistent `pipeline_exports` volume, and are deleted with their job. Do not horizontally scale without adding those controls. Queue broker redelivery by itself does not provide exactly-once side effects.
 
-For detailed setup and verification instructions, see:
-- [Setup Guide](docs/SETUP.md)
-- [Verification Guide](docs/VERIFICATION.md)
+For a detailed architecture narrative and limitations see `docs/architecture.md`, `docs/TECHNICAL_REPORT.md`, and `docs/VERIFICATION.md`.
 
+## Security hygiene
 
-## Architecture
+Do not commit `.env`, `prometheus-secrets/api_key`, output files, or credentials. Rotate any API key previously copied into logs, ZIP archives or chat. Use an outbound firewall / egress policy in addition to application SSRF checks for internet-facing deployments. The optional `SOURCE_HOST_ALLOWLIST` accepts exact hostnames and `*.example.com` patterns.
 
-```text
-HTTP client -> middleware -> handlers -> in-memory job repository
+## Assignment-compliance upgrades (current version)
 
-Source readers -> recordsCh -> validation workers -> transformation workers
-                                |                     |
-                                +----- errorsCh ------+
-```
+- **Correct cancellation method:** `PATCH /api/v1/pipelines/{id}/cancel` returns 202, 404 or 409. A `POST` compatibility alias remains for older clients.
+- **Artifact lifecycle:** exports live in a dedicated `output/<job-id>/` directory. DELETE of a completed/failed/cancelled job deletes only that directory, then deletes its GORM job record. Foreign-key cascade deletes `pipeline_daily_reports` rows. The Docker `pipeline_exports` volume survives API recreation; deleting the volume is intentionally destructive.
+- **Per-source field rules:** `sources[].field_map`, `required_fields`, `transform_rules` (same syntax as global transformations), and `enrich_fields` are applied before the shared validation pool. Source-specific rejected rows appear under `/errors`.
+- **Fan-in:** a bounded `aggregatedInput` channel is consumed by a single incremental aggregation goroutine concurrently with ingestion, validation and transformation; one export goroutine serializes selected output targets. An error collector runs concurrently. Input and metric snapshots can be observed during execution.
+- **Repeatable multi-source demo:** `examples/global_daily_sample_job.json` uses bundled synthetic COVID CSV, CoinGecko-style JSON and Open-Meteo-style JSON. `examples/verify_global_daily.ps1` checks reports and GORM rows in PostgreSQL.
 
-See [architecture details](docs/architecture.md), [design trade-offs](docs/design-decisions.md), and the original [architecture illustration](docs/go-pipeline-architecture.png).
-
-## Security boundaries and limitations
-
-- Do not expose the API on the internet without TLS termination, access controls, and appropriate network restrictions. API-key authentication alone is not a complete identity system.
-- The source policy checks job specifications at submission time. **Do not connect untrusted jobs to outbound HTTP execution until redirect and DNS-rebinding-safe checks are enforced at connection time.**
-- File source paths are constrained at submission time to `INPUT_DIR`; future execution should recheck opened files to avoid filesystem races.
-- Authentication is required on non-loopback listeners; development defaults work on local loopback only.
-- Rate limiting is in-memory and per process, based on the direct connection IP. Use a gateway for distributed limits or trusted proxy handling.
-- Jobs, progress, errors and results are kept in memory and will be lost after restart; no database or durable job queue is implemented.
-- HTTP jobs execute user-configured source URLs. API export paths are restricted to `output/`, but stronger OS-level sandboxing and outbound HTTP redirect/DNS rebinding protections are still pending.
+**Run checks:** `make deps`, `make ci`, `docker compose up --build -d`, then `./examples/verify_global_daily.ps1` in PowerShell with your local API key. See [current setup](docs/SETUP.md), [verification](docs/VERIFICATION.md), [architecture](docs/architecture.md), [technical report](docs/TECHNICAL_REPORT.md), and [global report instructions](docs/GLOBAL_DAILY_REPORT.md).

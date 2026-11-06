@@ -4,6 +4,7 @@ import (
 	"errors"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/mfvicky/go-data-pipeline/internal/domain"
 )
@@ -18,19 +19,22 @@ var (
 // JobRepository stores pending job specifications and execution status in memory.
 // Nothing survives a server restart. All returned objects are defensive copies.
 type JobRepository struct {
-	mu      sync.RWMutex
-	jobs    map[string]*domain.JobStatus
-	specs   map[string]*domain.JobSpec
-	results map[string]*domain.JobOutput
-	errors  map[string][]domain.PipelineError
+	mu          sync.RWMutex
+	jobs        map[string]*domain.JobStatus
+	specs       map[string]*domain.JobSpec
+	results     map[string]*domain.JobOutput
+	errors      map[string][]domain.PipelineError
+	store       persistentStore
+	lastPersist map[string]time.Time
 }
 
 func NewJobRepository() *JobRepository {
 	return &JobRepository{
-		jobs:    make(map[string]*domain.JobStatus),
-		specs:   make(map[string]*domain.JobSpec),
-		results: make(map[string]*domain.JobOutput),
-		errors:  make(map[string][]domain.PipelineError),
+		jobs:        make(map[string]*domain.JobStatus),
+		specs:       make(map[string]*domain.JobSpec),
+		results:     make(map[string]*domain.JobOutput),
+		errors:      make(map[string][]domain.PipelineError),
+		lastPersist: make(map[string]time.Time),
 	}
 }
 
@@ -42,6 +46,12 @@ func (r *JobRepository) Create(jobID string, spec domain.JobSpec, status domain.
 		return ErrExists
 	}
 	r.saveLocked(jobID, &spec, &status)
+	if err := r.persistLocked(jobID); err != nil {
+		delete(r.jobs, jobID)
+		delete(r.specs, jobID)
+		return err
+	}
+	r.lastPersist[jobID] = time.Now()
 	return nil
 }
 
@@ -50,6 +60,7 @@ func (r *JobRepository) Save(jobID string, spec *domain.JobSpec, status *domain.
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.saveLocked(jobID, spec, status)
+	_ = r.persistLocked(jobID)
 }
 
 func (r *JobRepository) saveLocked(jobID string, spec *domain.JobSpec, status *domain.JobStatus) {
@@ -118,6 +129,17 @@ func (r *JobRepository) UpdateStatus(jobID string, mutate func(*domain.JobStatus
 		return err
 	}
 	r.jobs[jobID] = &copyStatus
+	// Coalesce high-frequency progress notifications to avoid one database write
+	// per record. State transitions are always durable before returning.
+	last := r.lastPersist[jobID]
+	shouldPersist := r.store != nil && (copyStatus.State != status.State || copyStatus.EndTime != nil || last.IsZero() || time.Since(last) >= time.Second)
+	if shouldPersist {
+		if err := r.persistLocked(jobID); err != nil {
+			r.jobs[jobID] = status
+			return err
+		}
+		r.lastPersist[jobID] = time.Now()
+	}
 	return nil
 }
 
@@ -131,10 +153,16 @@ func (r *JobRepository) DeleteJob(jobID string) error {
 	if status.State == domain.StateRunning || status.State == domain.StatePending {
 		return ErrRunning
 	}
+	if r.store != nil {
+		if err := r.store.remove(jobID); err != nil {
+			return err
+		}
+	}
 	delete(r.jobs, jobID)
 	delete(r.specs, jobID)
 	delete(r.results, jobID)
 	delete(r.errors, jobID)
+	delete(r.lastPersist, jobID)
 	return nil
 }
 
@@ -146,7 +174,7 @@ func (r *JobRepository) AppendError(jobID string, failure domain.PipelineError) 
 		return ErrNotFound
 	}
 	r.errors[jobID] = append(r.errors[jobID], cloneError(failure))
-	return nil
+	return r.persistLocked(jobID)
 }
 
 func (r *JobRepository) GetErrors(jobID string) ([]domain.PipelineError, error) {
@@ -175,7 +203,7 @@ func (r *JobRepository) SaveResult(jobID string, result domain.JobOutput) error 
 	for i, failure := range copyResult.Errors {
 		r.errors[jobID][i] = cloneError(failure)
 	}
-	return nil
+	return r.persistLocked(jobID)
 }
 
 func (r *JobRepository) GetResult(jobID string) (*domain.JobOutput, error) {
@@ -210,6 +238,29 @@ func cloneOutput(result domain.JobOutput) domain.JobOutput {
 	out.Records = make([]domain.Record, len(result.Records))
 	for i, record := range result.Records {
 		out.Records[i] = cloneRecord(record)
+	}
+	out.DailyReport = make([]domain.DailyReportRow, len(result.DailyReport))
+	for i, row := range result.DailyReport {
+		out.DailyReport[i] = row
+		if row.Cases != nil {
+			n := *row.Cases
+			out.DailyReport[i].Cases = &n
+		}
+		if row.Deaths != nil {
+			n := *row.Deaths
+			out.DailyReport[i].Deaths = &n
+		}
+		if row.TemperatureC != nil {
+			n := *row.TemperatureC
+			out.DailyReport[i].TemperatureC = &n
+		}
+		if row.CryptoPrices != nil {
+			out.DailyReport[i].CryptoPrices = make(map[string]float64, len(row.CryptoPrices))
+			for k, v := range row.CryptoPrices {
+				out.DailyReport[i].CryptoPrices[k] = v
+			}
+		}
+		out.DailyReport[i].Sources = append([]string(nil), row.Sources...)
 	}
 	out.Aggregations = make([]domain.AggregationResult, len(result.Aggregations))
 	for i, aggregation := range result.Aggregations {
@@ -251,6 +302,16 @@ func cloneSpec(s domain.JobSpec) domain.JobSpec {
 		sources := make([]domain.SourceConfig, len(s.Sources))
 		copy(sources, s.Sources)
 		for i := range sources {
+			sources[i].RequiredFields = append([]string(nil), sources[i].RequiredFields...)
+			sources[i].TransformRules = cloneAnyMap(sources[i].TransformRules)
+			sources[i].EnrichFields = cloneAnyMap(sources[i].EnrichFields)
+			if sources[i].FieldMap != nil {
+				fields := make(map[string]string, len(sources[i].FieldMap))
+				for k, v := range sources[i].FieldMap {
+					fields[k] = v
+				}
+				sources[i].FieldMap = fields
+			}
 			if sources[i].Headers != nil {
 				headers := make(map[string]string, len(sources[i].Headers))
 				for k, v := range sources[i].Headers {
@@ -280,6 +341,10 @@ func cloneSpec(s domain.JobSpec) domain.JobSpec {
 	}
 	s.ExportTargets = append([]string(nil), s.ExportTargets...)
 	s.Exports = append([]domain.ExportConfig(nil), s.Exports...)
+	if s.Report != nil {
+		r := *s.Report
+		s.Report = &r
+	}
 	return s
 }
 
@@ -310,4 +375,21 @@ func cloneValue(v any) any {
 	default:
 		return x
 	}
+}
+
+// UpdateSpec persists validated, job-specific export destinations before execution.
+func (r *JobRepository) UpdateSpec(id string, spec domain.JobSpec) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	old, ok := r.specs[id]
+	if !ok {
+		return ErrNotFound
+	}
+	copied := cloneSpec(spec)
+	r.specs[id] = &copied
+	if err := r.persistLocked(id); err != nil {
+		r.specs[id] = old
+		return err
+	}
+	return nil
 }

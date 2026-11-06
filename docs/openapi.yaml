@@ -4,10 +4,26 @@ info:
   version: 1.0.0
   description: |
     Job management API for asynchronously executing concurrent pipeline jobs.
-    Results and progress are held in memory until the server restarts.
+    Results and progress are held in memory or optionally persisted in PostgreSQL.
 servers:
   - url: http://localhost:8080
 paths:
+  /ready:
+    get:
+      tags: [System]
+      summary: Basic readiness probe
+      responses:
+        '200':
+          description: Ready
+  /metrics:
+    get:
+      tags: [System]
+      summary: Prometheus metrics (when enabled)
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Prometheus text metrics
   /health:
     get:
       tags: [System]
@@ -60,9 +76,18 @@ paths:
           description: Content-Type must be application/json
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '503':
+          description: Bounded job queue is full or shutting down
     get:
       tags: [Jobs]
       summary: List saved pipeline jobs
+      parameters:
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 1000, default: 50}
+        - name: offset
+          in: query
+          schema: {type: integer, minimum: 0, default: 0}
       security:
         - ApiKeyAuth: []
       responses:
@@ -116,7 +141,7 @@ paths:
         - ApiKeyAuth: []
       responses:
         '204':
-          description: Deleted successfully
+          description: Job deleted, including its job-scoped file artifacts and database daily-report rows
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -190,7 +215,7 @@ paths:
                     items: {$ref: '#/components/schemas/FailedRecord'}
         '404': {$ref: '#/components/responses/NotFound'}
   /api/v1/pipelines/{id}/cancel:
-    post:
+    patch:
       tags: [Jobs]
       summary: Request cooperative cancellation of a PENDING or RUNNING job
       security:
@@ -255,6 +280,27 @@ components:
           type: string
         record_path:
           type: string
+        adapter:
+          type: string
+          enum: [covid_csv, coingecko_market_chart, coingecko_simple, open_meteo_daily, open_meteo_hourly]
+        asset:
+          type: string
+          description: Required for CoinGecko adapters (e.g. bitcoin)
+        field_map:
+          type: object
+          additionalProperties: {type: string}
+        required_fields:
+          type: array
+          description: Required fields specific to this source; invalid rows are collected separately.
+          items: {type: string}
+        transform_rules:
+          type: object
+          description: Per-source type conversions and normalization, applied before the common validation stage.
+          additionalProperties: true
+        enrich_fields:
+          type: object
+          description: Static fields to add to each source record without overwriting existing fields.
+          additionalProperties: true
         headers:
           type: object
           additionalProperties:
@@ -267,7 +313,10 @@ components:
           type: string
         operation:
           type: string
-          enum: [count, sum, avg]
+          enum: [count, sum, avg, min, max]
+        source_kind:
+          type: string
+          enum: [covid, crypto, weather]
         field:
           type: string
         group_by:
@@ -276,13 +325,34 @@ components:
             type: string
     Export:
       type: object
-      required: [type, path]
+      required: [type]
       properties:
         type:
           type: string
-          enum: [csv, json]
+          enum: [csv, json, postgres]
         path:
           type: string
+          description: Required for csv/json; omitted for postgres target
+    ReportConfig:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [global_daily]
+    DailyReportRow:
+      type: object
+      properties:
+        date: {type: string, format: date}
+        cases: {type: number, nullable: true}
+        deaths: {type: number, nullable: true}
+        temperature_c: {type: number, nullable: true}
+        crypto_prices:
+          type: object
+          additionalProperties: {type: number}
+        sources:
+          type: array
+          items: {type: string}
     JobSpec:
       type: object
       required: [sources]
@@ -314,6 +384,8 @@ components:
           type: integer
           minimum: 0
           maximum: 3600
+        report:
+          $ref: '#/components/schemas/ReportConfig'
         export_targets:
           type: array
           items:
@@ -422,6 +494,9 @@ components:
         aggregations:
           type: array
           items: {$ref: '#/components/schemas/AggregationResult'}
+        daily_report:
+          type: array
+          items: {$ref: '#/components/schemas/DailyReportRow'}
         errors:
           type: array
           items: {$ref: '#/components/schemas/PipelineError'}

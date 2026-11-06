@@ -8,15 +8,20 @@ ifeq ($(shell $(GO) env GOOS),windows)
 GO_TMP := $(shell cygpath -m "$(HOME)/go-tmp")
 GO_CACHE := $(shell cygpath -m "$(HOME)/go-cache")
 LINT_CACHE := $(shell cygpath -m "$(HOME)/golangci-lint-cache")
-GO_ENV := GOTMPDIR="$(GO_TMP)" GOCACHE="$(GO_CACHE)" TEMP="$(GO_TMP)" TMP="$(GO_TMP)" GOLANGCI_LINT_CACHE="$(LINT_CACHE)"
+# Always provide Windows paths explicitly. Some Git Bash + GNU Make combinations
+# drop the Go module-cache environment inherited from the interactive shell.
+GO_PATH := $(shell cygpath -m "$(HOME)/go")
+GO_MOD_CACHE := $(shell cygpath -m "$(HOME)/go/pkg/mod")
+GO_ENV := GOTMPDIR="$(GO_TMP)" GOCACHE="$(GO_CACHE)" TEMP="$(GO_TMP)" TMP="$(GO_TMP)" GOLANGCI_LINT_CACHE="$(LINT_CACHE)" GOPATH="$(GO_PATH)" GOMODCACHE="$(GO_MOD_CACHE)"
 else
 GO_ENV :=
 endif
 
-.PHONY: help run fmt fmt-check vet lint test test-race build check ci hooks
+.PHONY: help run deps fmt fmt-check vet lint test test-race build check ci hooks
 
 help:
 	@echo "make run        Start the API server"
+	@echo "make deps       Resolve Go modules and write go.sum"
 	@echo "make fmt        Format Go files"
 	@echo "make fmt-check  Check Go formatting"
 	@echo "make vet        Run go vet"
@@ -27,6 +32,9 @@ help:
 	@echo "make check      Run format, vet, lint, tests, and build"
 	@echo "make ci         Run check and race tests"
 	@echo "make hooks      Enable local Git hooks"
+
+deps:
+	$(GO_ENV) $(GO) mod tidy
 
 run:
 	$(GO_ENV) $(GO) run ./cmd/server

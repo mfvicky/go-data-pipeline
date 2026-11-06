@@ -1,341 +1,868 @@
 {
   "info": {
-    "_postman_id": "5a55fa15-6415-40cf-8787-5113b6f6e590",
-    "name": "Go Data Pipeline - Current API",
-    "description": "Run requests in collection order. The current REST API saves PENDING jobs only; pipeline execution and progress/results/errors routes are not yet wired to HTTP. Set collection variable apiKey to your configured API_KEY (leave empty for an unauthenticated local server).",
+    "_postman_id": "5614c581-7ba5-4cf0-8218-e91da1bba194",
+    "name": "Go Data Pipeline",
+    "description": "Updated against go-pipeline-postgres-docker-full-project.zip. Start Docker Compose first and set collection variables baseUrl and apiKey (matches API_KEY in .env). Run folders 01 and 02 in order, then 03 for negative tests. The Poll request loops in Collection Runner until the job finishes; for individual Send requests, poll manually. Folder 04 contains optional/manual tests and may delete job data; do not include it in an ordinary full-run. PostgreSQL itself is not a REST endpoint: persistence verification requires restarting the API container before rerunning the saved-job requests. Docker uses INPUT_DIR=/app/testdata/input, so the sample paths are testdata/input/customers.csv and customers.json; the exports are confined to output/<job-id>/ and are ephemeral under the current Docker Compose tmpfs.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
     {
-      "name": "01 - Health",
-      "request": {
-        "method": "GET",
-        "header": [],
-        "url": "{{baseUrl}}/health"
-      },
-      "event": [
+      "name": "01 - Service & Authentication",
+      "description": "Run first: public endpoints, database readiness, protected metrics, and API key enforcement.",
+      "item": [
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test(\"Health returns 200\", () => pm.response.to.have.status(200));",
-              "pm.test(\"Health body\", () => pm.expect(pm.response.text()).to.include(\"Pipeline API is running\"));"
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "02 - OpenAPI",
-      "request": {
-        "method": "GET",
-        "header": [],
-        "url": "{{baseUrl}}/openapi.yaml"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test(\"OpenAPI returns 200\", () => pm.response.to.have.status(200));",
-              "pm.test(\"OpenAPI YAML\", () => pm.expect(pm.response.text()).to.include(\"openapi: 3.0.3\"));"
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "03 - Swagger UI",
-      "request": {
-        "method": "GET",
-        "header": [],
-        "url": "{{baseUrl}}/swagger/"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test(\"Swagger returns 200\", () => pm.response.to.have.status(200));"
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "04 - List without API key",
-      "request": {
-        "method": "GET",
-        "header": [],
-        "url": "{{baseUrl}}/api/v1/pipelines"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "const apiKey = pm.collectionVariables.get(\"apiKey\") || \"\";",
-              "pm.test(\"Authentication behavior\", () => pm.response.to.have.status(apiKey ? 401 : 200));"
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "05 - Create and start job",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "X-API-Key",
-            "value": "{{apiKey}}",
-            "type": "text"
+          "name": "01.01 - Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/health"
           },
-          {
-            "key": "Content-Type",
-            "value": "application/json",
-            "type": "text"
-          }
-        ],
-        "url": "{{baseUrl}}/api/v1/pipelines",
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"sources\": [\n    {\n      \"name\": \"customers_csv\",\n      \"type\": \"csv\",\n      \"endpoint\": \"testdata/input/customers.csv\"\n    }\n  ],\n  \"validation_rules\": {\n    \"required_fields\": [\n      \"id\"\n    ]\n  },\n  \"worker_pool_sizes\": {\n    \"validation\": 2,\n    \"transformation\": 2\n  }\n}",
-          "options": {
-            "raw": {
-              "language": "json"
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Health 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Health response\", () => pm.expect(pm.response.text()).to.include(\"Pipeline API is running\"));"
+                ]
+              }
             }
-          }
-        }
-      },
-      "event": [
+          ]
+        },
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test(\"Create returns 201\", () => pm.response.to.have.status(201));",
-              "const body = pm.response.json();",
-              "pm.test(\"Job is PENDING\", () => pm.expect(body.state).to.eql(\"PENDING\"));",
-              "pm.test(\"Job ID exists\", () => pm.expect(body.job_id).to.be.a(\"string\").and.not.empty);",
-              "if (pm.response.code === 201 && body.job_id) {",
-              "    pm.collectionVariables.set(\"jobId\", body.job_id);",
-              "}"
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "06 - List jobs",
-      "request": {
-        "method": "GET",
-        "header": [
-          {
-            "key": "X-API-Key",
-            "value": "{{apiKey}}",
-            "type": "text"
-          }
-        ],
-        "url": "{{baseUrl}}/api/v1/pipelines"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test(\"List returns 200\", () => pm.response.to.have.status(200));",
-              "const body = pm.response.json();",
-              "pm.test(\"Jobs array\", () => pm.expect(body.jobs).to.be.an(\"array\"));"
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "07 - Get job details",
-      "request": {
-        "method": "GET",
-        "header": [
-          {
-            "key": "X-API-Key",
-            "value": "{{apiKey}}",
-            "type": "text"
-          }
-        ],
-        "url": "{{baseUrl}}/api/v1/pipelines/{{jobId}}"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test(\"Get returns 200\", () => pm.response.to.have.status(200));",
-              "const body = pm.response.json();",
-              "pm.test(\"Correct job\", () => pm.expect(body.job_id).to.eql(pm.collectionVariables.get(\"jobId\")));",
-              "pm.test(\"Job is pending\", () => pm.expect(body.status.state).to.eql(\"PENDING\"));"
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "08 - Reject invalid specification",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "X-API-Key",
-            "value": "{{apiKey}}",
-            "type": "text"
+          "name": "01.02 - Readiness (checks PostgreSQL)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/ready"
           },
-          {
-            "key": "Content-Type",
-            "value": "application/json",
-            "type": "text"
-          }
-        ],
-        "url": "{{baseUrl}}/api/v1/pipelines",
-        "body": {
-          "mode": "raw",
-          "raw": "{}",
-          "options": {
-            "raw": {
-              "language": "json"
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Readiness 200 (database connected)\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Ready body\", () => pm.expect(pm.response.text()).to.include(\"ready\"));"
+                ]
+              }
             }
-          }
-        }
-      },
-      "event": [
+          ]
+        },
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test(\"Invalid job returns 400\", () => pm.response.to.have.status(400));",
-              "pm.test(\"Error message exists\", () => pm.expect(pm.response.json().error).to.be.a(\"string\"));"
-            ]
-          }
+          "name": "01.03 - OpenAPI specification",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/openapi.yaml"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"OpenAPI 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Contains OpenAPI document\", () => pm.expect(pm.response.text()).to.include(\"openapi:\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "01.04 - Swagger UI",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/swagger/"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "01.05 - Prometheus metrics (API key)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/metrics"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Metrics 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Contains job metric\", () => pm.expect(pm.response.text()).to.include(\"pipeline_jobs_started_total\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "01.06 - No API key is rejected (Docker)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/pipelines",
+            "description": "Expected 401 with the Docker Compose configuration; if running locally with API_KEY unset, the route will be open (200)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Docker requires API key\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
     {
-      "name": "09 - Delete job",
-      "request": {
-        "method": "DELETE",
-        "header": [
-          {
-            "key": "X-API-Key",
-            "value": "{{apiKey}}",
-            "type": "text"
-          }
-        ],
-        "url": "{{baseUrl}}/api/v1/pipelines/{{jobId}}"
-      },
-      "event": [
+      "name": "02 - CSV + JSON Job | Run in order",
+      "description": "Recommended end-to-end Postman Runner workflow (folder 02 only after folder 01). Creates a pipeline job, polls to completion, checks count/sum/avg group-by, exports config, progress, results, errors, pagination and metrics. Set collection variable apiKey first.",
+      "item": [
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test(\"Delete returns 204\", () => pm.response.to.have.status(204));"
-            ]
-          }
+          "name": "02.01 - Create CSV + JSON job",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/pipelines",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sources\": [\n    {\n      \"name\": \"customers_csv\",\n      \"type\": \"csv\",\n      \"endpoint\": \"testdata/input/customers.csv\"\n    },\n    {\n      \"name\": \"customers_json\",\n      \"type\": \"json\",\n      \"endpoint\": \"testdata/input/customers.json\"\n    }\n  ],\n  \"validation_rules\": {\n    \"required_fields\": [\n      \"id\",\n      \"city\",\n      \"amount\"\n    ]\n  },\n  \"transform_rules\": {\n    \"normalize\": [\n      \"city\"\n    ]\n  },\n  \"aggregations\": [\n    {\n      \"name\": \"count_by_city\",\n      \"operation\": \"count\",\n      \"group_by\": [\n        \"city\"\n      ]\n    },\n    {\n      \"name\": \"sum_amount_by_city\",\n      \"operation\": \"sum\",\n      \"field\": \"amount\",\n      \"group_by\": [\n        \"city\"\n      ]\n    },\n    {\n      \"name\": \"average_amount\",\n      \"operation\": \"avg\",\n      \"field\": \"amount\"\n    }\n  ],\n  \"worker_pool_sizes\": {\n    \"ingestion\": 2,\n    \"validation\": 3,\n    \"transformation\": 3\n  },\n  \"timeout_seconds\": 30,\n  \"exports\": [\n    {\n      \"type\": \"json\",\n      \"path\": \"output/report.json\"\n    },\n    {\n      \"type\": \"csv\",\n      \"path\": \"output/records.csv\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Reads Docker-bundled 3 CSV and 2 JSON records, runs count/sum/avg aggregations, writes JSON and CSV exports to job-specific output paths. Save the returned job_id automatically."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Create 201\", () => pm.response.to.have.status(201));",
+                  "if (pm.response.code === 201) {",
+                  "const body = pm.response.json();",
+                  "pm.test(\"Job ID returned\", () => pm.expect(body.job_id).to.be.a(\"string\").and.not.empty);",
+                  "pm.test(\"Accepted state\", () => pm.expect(body.state).to.eql(\"PENDING\"));",
+                  "pm.collectionVariables.set(\"jobId\", body.job_id);",
+                  "pm.collectionVariables.set(\"pollCount\", \"0\");",
+                  "pm.collectionVariables.unset(\"jobState\");",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "02.02 - Get job details",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/pipelines/{{jobId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Job details 200\", () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) {",
+                  "const body = pm.response.json();",
+                  "pm.test(\"Correct saved job\", () => pm.expect(body.job_id).to.eql(pm.collectionVariables.get(\"jobId\")));",
+                  "pm.test(\"Includes status and spec\", () => { pm.expect(body.status).to.be.an(\"object\"); pm.expect(body.spec).to.be.an(\"object\"); });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "02.03 - Poll progress until terminal (Runner)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/pipelines/{{jobId}}/progress",
+            "description": "When running this folder in Postman Collection Runner, repeats until COMPLETED/FAILED/CANCELLED, up to 30 attempts (~6 seconds). When using Send manually, repeat until terminal before requesting results."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Progress 200\", () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) {",
+                  "const body = pm.response.json();",
+                  "const states = [\"PENDING\", \"RUNNING\", \"COMPLETED\", \"FAILED\", \"CANCELLED\"];",
+                  "pm.test(\"Valid job state\", () => pm.expect(states).to.include(body.state));",
+                  "pm.test(\"Progress counters\", () => { pm.expect(body.records_read).to.be.a(\"number\"); pm.expect(body.records_processed).to.be.a(\"number\"); });",
+                  "const terminal = [\"COMPLETED\", \"FAILED\", \"CANCELLED\"].includes(body.state);",
+                  "if (terminal) {",
+                  "pm.collectionVariables.set(\"jobState\", body.state);",
+                  "pm.collectionVariables.set(\"pollCount\", \"0\");",
+                  "pm.test(\"Sample job completed\", () => pm.expect(body.state).to.eql(\"COMPLETED\"));",
+                  "pm.test(\"Five sample records read\", () => pm.expect(body.records_read).to.eql(5));",
+                  "pm.test(\"Five sample records processed\", () => pm.expect(body.records_processed).to.eql(5));",
+                  "} else {",
+                  "const attempt = Number(pm.collectionVariables.get(\"pollCount\") || \"0\") + 1;",
+                  "pm.collectionVariables.set(\"pollCount\", String(attempt));",
+                  "if (attempt >= 30) {",
+                  "pm.test(\"Sample job finishes within 30 polls\", () => pm.expect.fail(\"Still \" + body.state + \" after 30 polls\"));",
+                  "pm.execution.setNextRequest(null);",
+                  "} else {",
+                  "pm.execution.setNextRequest(pm.info.requestName);",
+                  "setTimeout(() => {}, 200);",
+                  "}",
+                  "}",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "02.04 - Results and aggregations",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/pipelines/{{jobId}}/results",
+            "description": "Returns 409 if the async job has not finished; first run 02.03 until COMPLETED."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Results 200 after completion\", () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) {",
+                  "const body = pm.response.json();",
+                  "pm.test(\"Five processed records\", () => pm.expect(body.records).to.have.lengthOf(5));",
+                  "pm.test(\"Aggregation results\", () => pm.expect(body.aggregations).to.be.an(\"array\").and.have.lengthOf(7));",
+                  "const avg = body.aggregations.find(a => a.name === \"average_amount\");",
+                  "pm.test(\"Average amount 136.05\", () => { pm.expect(avg).to.exist; pm.expect(avg.value).to.be.closeTo(136.05, 0.001); });",
+                  "pm.test(\"No sample job errors\", () => pm.expect(body.errors).to.have.lengthOf(0));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "02.05 - Errors and failed records",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/pipelines/{{jobId}}/errors"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Errors endpoint 200\", () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) {",
+                  "const body = pm.response.json();",
+                  "pm.test(\"No failures for sample data\", () => { pm.expect(body.count).to.eql(0); pm.expect(body.failed_records).to.be.an(\"array\"); });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "02.06 - Paginated results (2 records)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/pipelines/{{jobId}}/results?offset=0&limit=2"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) { const b = pm.response.json(); pm.test(\"Pagination\", () => { pm.expect(b.records).to.have.lengthOf(2); pm.expect(b.total_records).to.eql(5); pm.expect(b.limit).to.eql(2); }); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "02.07 - List jobs (paginated)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/pipelines?offset=0&limit=10"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) { const b = pm.response.json(); pm.test(\"Job list is paginated\", () => { pm.expect(b.jobs).to.be.an(\"array\"); pm.expect(b.total).to.be.a(\"number\"); pm.expect(b.limit).to.eql(10); }); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "02.08 - Check metrics after job",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/metrics"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Completed job metrics\", () => pm.expect(pm.response.text()).to.include(\"pipeline_jobs_finished_total{state=\\\"completed\\\"}\"));"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
     {
-      "name": "10 - Deleted job returns 404",
-      "request": {
-        "method": "GET",
-        "header": [
-          {
-            "key": "X-API-Key",
-            "value": "{{apiKey}}",
-            "type": "text"
-          }
-        ],
-        "url": "{{baseUrl}}/api/v1/pipelines/{{jobId}}"
-      },
-      "event": [
+      "name": "03 - Negative Tests",
+      "description": "Safe validation/error scenarios. Assumes folder 02 has completed for the last test.",
+      "item": [
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test(\"Deleted job returns 404\", () => pm.response.to.have.status(404));"
-            ]
-          }
+          "name": "03.01 - Reject missing sources",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/pipelines",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Invalid spec 400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "03.02 - Reject malformed JSON",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/pipelines",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"sources\": [",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Malformed JSON 400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "03.03 - Reject unknown field",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/pipelines",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"sources\":[{\"type\":\"csv\",\"endpoint\":\"testdata/input/customers.csv\"}],\"unexpected\":true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Unexpected property 400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "03.04 - Reject invalid pagination",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/pipelines?limit=0"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Invalid limit 400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "03.05 - Missing job ID returns 404",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/pipelines/does-not-exist"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Unknown job 404\", () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "03.06 - PATCH cancel completed job returns 409",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/pipelines/{{jobId}}/cancel",
+            "description": "Run after folder 02 has finished and jobState is COMPLETED."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Completed job cannot be cancelled\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
     {
-      "name": "11 - Get job progress",
-      "request": {
-        "method": "GET",
-        "header": [
-          {
-            "key": "X-API-Key",
-            "value": "{{apiKey}}",
-            "type": "text"
-          }
-        ],
-        "url": "{{baseUrl}}/api/v1/pipelines/{{jobId}}/progress"
-      }
-    },
-    {
-      "name": "12 - Get job results",
-      "request": {
-        "method": "GET",
-        "header": [
-          {
-            "key": "X-API-Key",
-            "value": "{{apiKey}}",
-            "type": "text"
-          }
-        ],
-        "url": "{{baseUrl}}/api/v1/pipelines/{{jobId}}/results"
-      }
-    },
-    {
-      "name": "13 - Get job errors",
-      "request": {
-        "method": "GET",
-        "header": [
-          {
-            "key": "X-API-Key",
-            "value": "{{apiKey}}",
-            "type": "text"
-          }
-        ],
-        "url": "{{baseUrl}}/api/v1/pipelines/{{jobId}}/errors"
-      }
-    },
-    {
-      "name": "14 - Cancel running job",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "X-API-Key",
-            "value": "{{apiKey}}",
-            "type": "text"
-          }
-        ],
-        "url": "{{baseUrl}}/api/v1/pipelines/{{jobId}}/cancel"
-      }
+      "name": "04 - Optional / Manual | Do not run by default",
+      "description": "Manual scenarios only: PostgreSQL restart persistence, cancellation races, external HTTP, and deletion. Run requests individually, and never run destructive requests until persistence checks are complete.",
+      "item": [
+        {
+          "name": "04.01 - Retrieve saved job AFTER Docker API restart",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/pipelines/{{jobId}}",
+            "description": "Manual persistence test: create/finish job in folder 02, run docker compose restart api, then run this single request. Requires STORAGE_DRIVER=postgres."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) { const b = pm.response.json(); pm.test(\"Same persisted job ID\", () => pm.expect(b.job_id).to.eql(pm.collectionVariables.get(\"jobId\"))); pm.test(\"Persisted status\", () => pm.expect(b.status.state).to.eql(\"COMPLETED\")); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "04.02 - Read persisted results AFTER restart",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/pipelines/{{jobId}}/results",
+            "description": "Run after restarting API without deleting the postgres_data volume."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) { pm.test(\"Saved records persisted\", () => pm.expect(pm.response.json().records).to.have.lengthOf(5)); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "04.03 - Create separate cancellation job",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/pipelines",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sources\": [\n    {\n      \"name\": \"cancel_csv\",\n      \"type\": \"csv\",\n      \"endpoint\": \"testdata/input/customers.csv\"\n    }\n  ],\n  \"worker_pool_sizes\": {\n    \"ingestion\": 1,\n    \"validation\": 1,\n    \"transformation\": 1\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Creates a short job. It may complete before the cancel request: 409 in that case is expected."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Job accepted\", () => pm.response.to.have.status(201));",
+                  "if (pm.response.code === 201) pm.collectionVariables.set(\"cancelJobId\", pm.response.json().job_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "04.04 - PATCH cancellation (timing dependent)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/pipelines/{{cancelJobId}}/cancel",
+            "description": "Expect 202 if job is still pending/running, or 409 if it has already completed. For a reliable 202 test use a controlled slow HTTP source and allow it in your source policy."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Cancel accepted or job already completed\", () => pm.expect([202, 409]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "04.05 - Create external HTTP API job (Internet required)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/pipelines",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sources\": [\n    {\n      \"name\": \"posts_api\",\n      \"type\": \"api\",\n      \"endpoint\": \"https://jsonplaceholder.typicode.com/posts\"\n    }\n  ],\n  \"validation_rules\": {\n    \"required_fields\": [\n      \"id\"\n    ]\n  },\n  \"timeout_seconds\": 30\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Optional. Requires outbound HTTPS DNS/network access from the API container; a 201 only means accepted, check /progress and /errors to see the execution result."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"External API job accepted\", () => pm.response.to.have.status(201));",
+                  "if (pm.response.code === 201) pm.collectionVariables.set(\"httpJobId\", pm.response.json().job_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "04.06 - External HTTP job progress",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/pipelines/{{httpJobId}}/progress",
+            "description": "Poll if job is still running. External failures may show COMPLETED with recorded nonfatal errors."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP 200\", () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) pm.test(\"State is valid\", () => pm.expect([\"PENDING\",\"RUNNING\",\"COMPLETED\",\"FAILED\",\"CANCELLED\"]).to.include(pm.response.json().state));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "04.07 - Delete saved sample job (destructive)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/pipelines/{{jobId}}",
+            "description": "Run only when finished with persistence verification. This deletes your saved sample job."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Deleted terminal job 204\", () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "04.08 - Deleted job returns 404",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/pipelines/{{jobId}}",
+            "description": "Run after 04.07."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Deleted job 404\", () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ],
   "variable": [
     {
       "key": "baseUrl",
-      "value": "http://localhost:8080",
+      "value": "http://127.0.0.1:8080",
       "type": "string"
     },
     {
@@ -345,6 +872,26 @@
     },
     {
       "key": "jobId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "jobState",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "pollCount",
+      "value": "0",
+      "type": "string"
+    },
+    {
+      "key": "cancelJobId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "httpJobId",
       "value": "",
       "type": "string"
     }

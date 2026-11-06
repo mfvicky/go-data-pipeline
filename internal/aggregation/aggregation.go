@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/mfvicky/go-data-pipeline/internal/domain"
 )
@@ -17,6 +15,8 @@ type bucket struct {
 	group map[string]any
 	sum   float64
 	count int64
+	min   float64
+	max   float64
 }
 
 // Compute aggregates transformed, valid records. Invalid aggregate inputs are
@@ -25,84 +25,13 @@ func Compute(ctx context.Context, jobID string, records []domain.Record, configs
 	if ctx == nil {
 		return nil, nil, fmt.Errorf("context is required")
 	}
-	var results []domain.AggregationResult
-	var failures []domain.PipelineError
-
-	for _, config := range configs {
-		buckets := make(map[string]*bucket)
-		if len(config.GroupBy) == 0 {
-			buckets["[]"] = &bucket{}
-		}
-
-		for _, record := range records {
-			if err := ctx.Err(); err != nil {
-				return results, failures, err
-			}
-			group, key, err := groupFor(record.Data, config.GroupBy)
-			if err == nil && config.Operation != "count" {
-				var n float64
-				n, err = number(record.Data, config.Field)
-				if err == nil {
-					current := 0.0
-					if prior := buckets[key]; prior != nil {
-						current = prior.sum
-					}
-					if math.IsInf(current+n, 0) || math.IsNaN(current+n) {
-						err = fmt.Errorf("field %q: sum exceeds numeric range", config.Field)
-					} else {
-						b := buckets[key]
-						if b == nil {
-							b = &bucket{group: group}
-							buckets[key] = b
-						}
-						b.sum += n
-						b.count++
-					}
-				}
-			} else if err == nil {
-				b := buckets[key]
-				if b == nil {
-					b = &bucket{group: group}
-					buckets[key] = b
-				}
-				b.count++
-			}
-			if err != nil {
-				failures = append(failures, domain.PipelineError{
-					JobID: jobID, Stage: "aggregation", RecordID: record.ID,
-					Message:   fmt.Sprintf("aggregation %q: %v", config.Name, err),
-					Timestamp: time.Now().UTC(),
-				})
-			}
-		}
-
-		keys := make([]string, 0, len(buckets))
-		for key := range buckets {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			b := buckets[key]
-			value := float64(b.count)
-			switch config.Operation {
-			case "sum":
-				value = b.sum
-			case "avg":
-				value = 0
-				if b.count > 0 {
-					value = b.sum / float64(b.count)
-				}
-			}
-			results = append(results, domain.AggregationResult{
-				Name: config.Name, Operation: config.Operation, Field: config.Field,
-				Group: b.group, Value: value, Count: b.count,
-			})
+	a := NewAccumulator(jobID, configs)
+	for _, record := range records {
+		if err := a.Add(ctx, record); err != nil {
+			return nil, a.failures, err
 		}
 	}
-	if err := ctx.Err(); err != nil {
-		return results, failures, err
-	}
-	return results, failures, nil
+	return a.Finish(ctx)
 }
 
 func groupFor(data map[string]any, fields []string) (map[string]any, string, error) {

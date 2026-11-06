@@ -43,3 +43,6 @@ coverage.out
 Thumbs.db
 .cache/
 /post.txt
+/data/
+/prometheus-secrets/*
+!/prometheus-secrets/README.md

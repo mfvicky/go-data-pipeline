@@ -45,6 +45,41 @@ func ValidateJobSpec(spec JobSpec) error {
 		if source.Type != "api" && len(source.Headers) > 0 {
 			return fmt.Errorf("sources[%d].headers: supported only for api sources", i)
 		}
+		switch source.Adapter {
+		case "", "covid_csv", "coingecko_market_chart", "coingecko_simple", "open_meteo_daily", "open_meteo_hourly":
+		default:
+			return fmt.Errorf("sources[%d].adapter: unsupported adapter %q", i, source.Adapter)
+		}
+		if source.Adapter == "covid_csv" && source.Type != "csv" {
+			return fmt.Errorf("sources[%d].adapter: covid_csv requires csv type", i)
+		}
+		if source.Adapter != "" && source.Adapter != "covid_csv" && source.Type == "csv" {
+			return fmt.Errorf("sources[%d].adapter: adapter requires json or api type", i)
+		}
+		if strings.HasPrefix(source.Adapter, "coingecko_") && strings.TrimSpace(source.Asset) == "" {
+			return fmt.Errorf("sources[%d].asset: required for coingecko adapter", i)
+		}
+		for canonical, original := range source.FieldMap {
+			if strings.TrimSpace(canonical) == "" || strings.TrimSpace(original) == "" {
+				return fmt.Errorf("sources[%d].field_map: field names cannot be empty", i)
+			}
+		}
+		if len(source.EnrichFields) > 32 {
+			return fmt.Errorf("sources[%d].enrich_fields: at most 32 fields", i)
+		}
+		for field := range source.EnrichFields {
+			if strings.TrimSpace(field) == "" {
+				return fmt.Errorf("sources[%d].enrich_fields: empty name", i)
+			}
+		}
+		for _, field := range source.RequiredFields {
+			if strings.TrimSpace(field) == "" {
+				return fmt.Errorf("sources[%d].required_fields: field cannot be empty", i)
+			}
+		}
+		if source.Adapter != "" && source.RecordPath != "" {
+			return fmt.Errorf("sources[%d].record_path: adapters decode provider response directly", i)
+		}
 		for k, v := range source.Headers {
 			if strings.TrimSpace(k) == "" || strings.ContainsAny(k+v, "\r\n") {
 				return fmt.Errorf("sources[%d].headers: invalid header", i)
@@ -73,18 +108,31 @@ func ValidateJobSpec(spec JobSpec) error {
 			return fmt.Errorf("aggregations[%d].name: duplicate name", i)
 		}
 		aggregationNames[a.Name] = struct{}{}
+		if a.SourceKind != "" && a.SourceKind != "covid" && a.SourceKind != "crypto" && a.SourceKind != "weather" {
+			return fmt.Errorf("aggregations[%d].source_kind: must be covid, crypto or weather", i)
+		}
 		switch a.Operation {
 		case "count":
-		case "sum", "avg":
+		case "sum", "avg", "min", "max":
 			if strings.TrimSpace(a.Field) == "" {
 				return fmt.Errorf("aggregations[%d].field: required for %s", i, a.Operation)
 			}
 		default:
-			return fmt.Errorf("aggregations[%d].operation: must be count, sum, or avg", i)
+			return fmt.Errorf("aggregations[%d].operation: must be count, sum, avg, min or max", i)
 		}
 		for _, field := range a.GroupBy {
 			if strings.TrimSpace(field) == "" {
 				return fmt.Errorf("aggregations[%d].group_by: field cannot be empty", i)
+			}
+		}
+	}
+	if spec.Report != nil {
+		if spec.Report.Type != "global_daily" {
+			return fmt.Errorf("report.type: must be global_daily")
+		}
+		for i, source := range spec.Sources {
+			if source.Adapter == "" {
+				return fmt.Errorf("sources[%d].adapter: required for global_daily report", i)
 			}
 		}
 	}
@@ -94,10 +142,17 @@ func ValidateJobSpec(spec JobSpec) error {
 		}
 	}
 	for i, target := range spec.Exports {
-		if target.Type != "csv" && target.Type != "json" {
-			return fmt.Errorf("exports[%d].type: must be csv or json", i)
+		if target.Type != "csv" && target.Type != "json" && target.Type != "postgres" {
+			return fmt.Errorf("exports[%d].type: must be csv, json or postgres", i)
 		}
-		if strings.TrimSpace(target.Path) == "" {
+		if target.Type == "postgres" {
+			if spec.Report == nil || spec.Report.Type != "global_daily" {
+				return fmt.Errorf("exports[%d]: postgres target requires global_daily report", i)
+			}
+			if target.Path != "" {
+				return fmt.Errorf("exports[%d].path: postgres target does not accept a path", i)
+			}
+		} else if strings.TrimSpace(target.Path) == "" {
 			return fmt.Errorf("exports[%d].path: required", i)
 		}
 	}

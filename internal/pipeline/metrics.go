@@ -37,6 +37,17 @@ func (m *metricsTracker) recordRead() {
 	m.mu.Unlock()
 }
 
+// recordRejected accounts for a row rejected by a source-specific adapter.
+// No downstream worker receives it, but it is part of total input progress.
+func (m *metricsTracker) recordRejected() {
+	m.mu.Lock()
+	m.snapshot.RecordsRead++
+	m.snapshot.RecordsFailed++
+	m.snapshot.ErrorCount++
+	m.publish(m.snapshotLocked())
+	m.mu.Unlock()
+}
+
 func (m *metricsTracker) stageComplete(stage string, elapsed time.Duration, failures int64) {
 	m.mu.Lock()
 	latency := m.snapshot.StageLatencies[stage]

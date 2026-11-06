@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/mfvicky/go-data-pipeline/internal/domain"
+	"github.com/mfvicky/go-data-pipeline/internal/security"
 )
 
 var client = &http.Client{Timeout: defaultHTTPTimeout}
@@ -42,7 +43,14 @@ func loadSource(ctx context.Context, source domain.SourceConfig, accept string, 
 		for name, value := range source.Headers {
 			req.Header.Set(name, value)
 		}
-		resp, err := client.Do(req)
+		activeClient := client
+		if policy := security.PolicyFromContext(ctx); policy != nil {
+			if err := policy.ValidateForExecution(ctx, source); err != nil {
+				return nil, fmt.Errorf("source blocked: %w", err)
+			}
+			activeClient = policy.HTTPClient(defaultHTTPTimeout)
+		}
+		resp, err := activeClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("fetch source: %w", err)
 		}
@@ -55,7 +63,13 @@ func loadSource(ctx context.Context, source domain.SourceConfig, accept string, 
 		if apiOnly || strings.Contains(source.Endpoint, "://") {
 			return nil, fmt.Errorf("source requires an http(s) URL")
 		}
-		file, err := os.Open(source.Endpoint)
+		var file io.ReadCloser
+		var err error
+		if policy := security.PolicyFromContext(ctx); policy != nil {
+			file, err = policy.OpenFile(source.Endpoint)
+		} else {
+			file, err = os.Open(source.Endpoint)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("open source: %w", err)
 		}
