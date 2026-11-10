@@ -1,0 +1,6 @@
+# Example only. Replace the hostname and configure public DNS first.
+# Caddy manages the certificate automatically when DNS and ports 80/443 work.
+pipeline.example.com {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8080
+}

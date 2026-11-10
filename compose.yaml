@@ -1,0 +1,124 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pipeline}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in your .env file}
+      POSTGRES_DB: ${POSTGRES_DB:-pipeline}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:4.1.8-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-pipeline}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 15s
+      retries: 15
+      start_period: 90s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  api:
+    build: .
+    image: go-data-pipeline:local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${PORT:-8080}:8080"
+    environment:
+      APP_ENV: production
+      HOST: 0.0.0.0
+      PORT: "8080"
+      API_KEY: ${API_KEY:?Set API_KEY in your .env file}
+      INPUT_DIR: /app/testdata/input
+      ALLOW_PRIVATE_SOURCES: "false"
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-120}
+      STORAGE_DRIVER: postgres
+      QUEUE_DRIVER: rabbitmq
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-pipeline}:${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD in .env}@rabbitmq:5672/
+      RABBITMQ_QUEUE: ${RABBITMQ_QUEUE:-pipeline.jobs}
+      SOURCE_HOST_ALLOWLIST: ${SOURCE_HOST_ALLOWLIST:-}
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER:-pipeline}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in your .env file}
+      PGDATABASE: ${POSTGRES_DB:-pipeline}
+      PGSSLMODE: disable
+      PGCONNECT_TIMEOUT: "5"
+      PGOPTIONS: "-c statement_timeout=10000"
+      MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-5}
+      JOB_QUEUE_CAPACITY: ${JOB_QUEUE_CAPACITY:-100}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: json
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      # Persistent exported files; Dockerfile creates /app/output owned by UID 65532.
+      - pipeline_exports:/app/output
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.7.0
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus-secrets/api_key:/etc/prometheus/secrets/api_key:ro
+      - prometheus_data:/prometheus
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2.10-alpine
+    profiles: ["tls"]
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PIPELINE_DOMAIN: ${PIPELINE_DOMAIN:-localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  pipeline_exports:
+  postgres_data:
+  prometheus_data:
+  rabbitmq_data:
+  caddy_data:
+  caddy_config:

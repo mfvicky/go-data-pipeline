@@ -1,0 +1,64 @@
+{
+  "sources": [
+    {
+      "name": "customers_csv",
+      "type": "csv",
+      "endpoint": "testdata/input/customers.csv"
+    },
+    {
+      "name": "customers_json",
+      "type": "json",
+      "endpoint": "testdata/input/customers.json"
+    }
+  ],
+  "validation_rules": {
+    "required_fields": [
+      "id",
+      "city",
+      "amount"
+    ]
+  },
+  "transform_rules": {
+    "normalize": [
+      "city"
+    ]
+  },
+  "aggregations": [
+    {
+      "name": "count_by_city",
+      "operation": "count",
+      "group_by": [
+        "city"
+      ]
+    },
+    {
+      "name": "sum_amount_by_city",
+      "operation": "sum",
+      "field": "amount",
+      "group_by": [
+        "city"
+      ]
+    },
+    {
+      "name": "average_amount",
+      "operation": "avg",
+      "field": "amount"
+    }
+  ],
+  "worker_pool_sizes": {
+    "ingestion": 2,
+    "validation": 3,
+    "transformation": 3
+  },
+  "timeout_seconds": 30,
+  "exports": [
+    {
+      "type": "json",
+      "path": "output/report.json"
+    },
+    {
+      "type": "csv",
+      "path": "output/records.csv"
+    }
+  ]
+}

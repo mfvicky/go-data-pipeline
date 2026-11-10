@@ -1,0 +1,13 @@
+version: "2"
+
+run:
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+
+formatters:
+  enable:
+    - gofmt

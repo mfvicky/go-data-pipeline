@@ -1,0 +1,48 @@
+{
+  "sources": [
+    {
+      "name": "customers_csv",
+      "type": "csv",
+      "endpoint": "testdata/input/customers.csv"
+    },
+    {
+      "name": "customers_json",
+      "type": "json",
+      "endpoint": "testdata/input/customers.json"
+    },
+    {
+      "name": "posts_api",
+      "type": "api",
+      "endpoint": "https://jsonplaceholder.typicode.com/posts"
+    }
+  ],
+  "validation_rules": {
+    "required_fields": ["id"]
+  },
+  "transform_rules": {
+    "trim_strings": true
+  },
+  "aggregations": [
+    {
+      "name": "records_by_city",
+      "operation": "count",
+      "group_by": ["city"]
+    },
+    {
+      "name": "amount_by_city",
+      "operation": "sum",
+      "field": "amount",
+      "group_by": ["city"]
+    }
+  ],
+  "worker_pool_sizes": {
+    "ingestion": 3,
+    "validation": 4,
+    "transformation": 4
+  },
+  "timeout_seconds": 60,
+  "exports": [
+    {"type": "json", "path": "output/report.json"},
+    {"type": "csv", "path": "output/records.csv"}
+  ]
+}

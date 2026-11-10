@@ -1,0 +1,37 @@
+name: Publish container image
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+  packages: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache: false
+      - name: Resolve dependencies
+        run: go mod tidy
+      - name: Test and vet
+        run: |
+          go vet ./...
+          go test -race ./... -count=1
+      - name: Build Docker image
+        run: docker build -t pipeline-release-test:local .
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set image name
+        run: echo "IMAGE=$(echo ghcr.io/${GITHUB_REPOSITORY} | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+      - name: Authenticate to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build image
+        run: docker build -t "$IMAGE:${GITHUB_REF_NAME}" .
+      - name: Publish image
+        run: docker push "$IMAGE:${GITHUB_REF_NAME}"
