@@ -20,6 +20,7 @@ and migrates the new `pipeline_daily_reports` table.
 3. With `API_KEY` from your own `.env` available only locally:
 
    ```powershell
+   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
    .\examples\verify_global_daily.ps1 -ApiKey '<your current API key>'
    ```
 
