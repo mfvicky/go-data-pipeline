@@ -1,0 +1,505 @@
+openapi: 3.0.3
+info:
+  title: Go Data Processing Pipeline API
+  version: 1.0.0
+  description: |
+    Job management API for asynchronously executing concurrent pipeline jobs.
+    Results and progress are held in memory or optionally persisted in PostgreSQL.
+servers:
+  - url: http://localhost:8080
+paths:
+  /ready:
+    get:
+      tags: [System]
+      summary: Basic readiness probe
+      responses:
+        '200':
+          description: Ready
+  /metrics:
+    get:
+      tags: [System]
+      summary: Prometheus metrics (when enabled)
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Prometheus text metrics
+  /health:
+    get:
+      tags: [System]
+      summary: Server health check
+      responses:
+        '200':
+          description: Healthy
+          content:
+            text/plain:
+              schema:
+                type: string
+  /api/v1/pipelines:
+    post:
+      tags: [Jobs]
+      summary: Submit a pipeline job for asynchronous execution
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobSpec'
+            example:
+              sources:
+                - name: customers_csv
+                  type: csv
+                  endpoint: testdata/input/customers.csv
+              worker_pool_sizes:
+                validation: 2
+                transformation: 2
+      responses:
+        '201':
+          description: Accepted for asynchronous execution; initially PENDING
+          headers:
+            Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          description: Request body too large
+        '415':
+          description: Content-Type must be application/json
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          description: Bounded job queue is full or shutting down
+    get:
+      tags: [Jobs]
+      summary: List saved pipeline jobs
+      parameters:
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 1000, default: 50}
+        - name: offset
+          in: query
+          schema: {type: integer, minimum: 0, default: 0}
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Jobs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jobs, count]
+                properties:
+                  jobs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/JobStatus'
+                  count:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /api/v1/pipelines/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Jobs]
+      summary: Get a saved job and specification
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Job details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobDetails'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+    delete:
+      tags: [Jobs]
+      summary: Delete a non-running job
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '204':
+          description: Job deleted, including its job-scoped file artifacts and database daily-report rows
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Running job cannot be deleted
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /api/v1/pipelines/{id}/progress:
+    get:
+      tags: [Jobs]
+      summary: Current job status, progress, throughput and stage latency metrics
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: Progress snapshot
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/JobStatus'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/pipelines/{id}/results:
+    get:
+      tags: [Jobs]
+      summary: Finished job records, aggregations, errors and rejected records
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: Finished job results (also returned for FAILED or CANCELLED jobs)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/JobOutput'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {description: Job has not finished yet}
+  /api/v1/pipelines/{id}/errors:
+    get:
+      tags: [Jobs]
+      summary: Live error and failed-record collection
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: Errors available so far
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: {type: integer}
+                  errors:
+                    type: array
+                    items: {$ref: '#/components/schemas/PipelineError'}
+                  failed_records:
+                    type: array
+                    items: {$ref: '#/components/schemas/FailedRecord'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/pipelines/{id}/cancel:
+    patch:
+      tags: [Jobs]
+      summary: Request cooperative cancellation of a PENDING or RUNNING job
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '202': {description: Cancellation requested; poll progress until CANCELLED}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {description: Job is no longer cancellable}
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Required when API_KEY is configured; always required in production.
+  responses:
+    BadRequest:
+      description: Invalid job specification
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+    NotFound:
+      description: Job not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+    TooManyRequests:
+      description: Too many requests
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+  schemas:
+    APIError:
+      type: object
+      properties:
+        error:
+          type: string
+    Source:
+      type: object
+      required: [type, endpoint]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [csv, json, api]
+        endpoint:
+          type: string
+        record_path:
+          type: string
+        adapter:
+          type: string
+          enum: [covid_csv, coingecko_market_chart, coingecko_simple, open_meteo_daily, open_meteo_hourly]
+        asset:
+          type: string
+          description: Required for CoinGecko adapters (e.g. bitcoin)
+        field_map:
+          type: object
+          additionalProperties: {type: string}
+        required_fields:
+          type: array
+          description: Required fields specific to this source; invalid rows are collected separately.
+          items: {type: string}
+        transform_rules:
+          type: object
+          description: Per-source type conversions and normalization, applied before the common validation stage.
+          additionalProperties: true
+        enrich_fields:
+          type: object
+          description: Static fields to add to each source record without overwriting existing fields.
+          additionalProperties: true
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+    Aggregation:
+      type: object
+      required: [name, operation]
+      properties:
+        name:
+          type: string
+        operation:
+          type: string
+          enum: [count, sum, avg, min, max]
+        source_kind:
+          type: string
+          enum: [covid, crypto, weather]
+        field:
+          type: string
+        group_by:
+          type: array
+          items:
+            type: string
+    Export:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [csv, json, postgres]
+        path:
+          type: string
+          description: Required for csv/json; omitted for postgres target
+    ReportConfig:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [global_daily]
+    DailyReportRow:
+      type: object
+      properties:
+        date: {type: string, format: date}
+        cases: {type: number, nullable: true}
+        deaths: {type: number, nullable: true}
+        temperature_c: {type: number, nullable: true}
+        crypto_prices:
+          type: object
+          additionalProperties: {type: number}
+        sources:
+          type: array
+          items: {type: string}
+    JobSpec:
+      type: object
+      required: [sources]
+      additionalProperties: false
+      properties:
+        sources:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/Source'
+        validation_rules:
+          type: object
+          additionalProperties: true
+        transform_rules:
+          type: object
+          additionalProperties: true
+        aggregations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Aggregation'
+        worker_pool_sizes:
+          type: object
+          additionalProperties:
+            type: integer
+            minimum: 1
+            maximum: 64
+        timeout_seconds:
+          type: integer
+          minimum: 0
+          maximum: 3600
+        report:
+          $ref: '#/components/schemas/ReportConfig'
+        export_targets:
+          type: array
+          items:
+            type: string
+        exports:
+          type: array
+          items:
+            $ref: '#/components/schemas/Export'
+    CreateResponse:
+      type: object
+      required: [job_id, state, message]
+      properties:
+        job_id:
+          type: string
+        state:
+          type: string
+          enum: [PENDING]
+        message:
+          type: string
+    JobStatus:
+      type: object
+      properties:
+        job_id:
+          type: string
+        state:
+          type: string
+          enum: [PENDING, RUNNING, COMPLETED, FAILED, CANCELLED]
+        records_processed:
+          type: integer
+          format: int64
+        records_read:
+          type: integer
+          format: int64
+        records_failed:
+          type: integer
+          format: int64
+        rate_per_second:
+          type: number
+          format: double
+        stage_latencies:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/StageLatency'
+        records_pending:
+          type: integer
+          format: int64
+        error_count:
+          type: integer
+          format: int64
+        percent_complete:
+          type: number
+        created_at:
+          type: string
+          format: date-time
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+    JobDetails:
+      type: object
+      properties:
+        job_id:
+          type: string
+        spec:
+          $ref: '#/components/schemas/JobSpec'
+        status:
+          $ref: '#/components/schemas/JobStatus'
+    StageLatency:
+      type: object
+      properties:
+        count: {type: integer, format: int64}
+        total_milliseconds: {type: number}
+        average_milliseconds: {type: number}
+    PipelineError:
+      type: object
+      properties:
+        job_id: {type: string}
+        stage: {type: string}
+        record_id: {type: string}
+        message: {type: string}
+        timestamp: {type: string, format: date-time}
+        record: {type: object, additionalProperties: true}
+    FailedRecord:
+      type: object
+      properties:
+        record: {type: object, additionalProperties: true}
+        error: {$ref: '#/components/schemas/PipelineError'}
+    AggregationResult:
+      type: object
+      properties:
+        name: {type: string}
+        operation: {type: string}
+        field: {type: string}
+        group: {type: object, additionalProperties: true}
+        value: {type: number}
+        count: {type: integer, format: int64}
+    JobOutput:
+      type: object
+      properties:
+        job_id: {type: string}
+        records:
+          type: array
+          items: {type: object, additionalProperties: true}
+        aggregations:
+          type: array
+          items: {$ref: '#/components/schemas/AggregationResult'}
+        daily_report:
+          type: array
+          items: {$ref: '#/components/schemas/DailyReportRow'}
+        errors:
+          type: array
+          items: {$ref: '#/components/schemas/PipelineError'}
+        failed_records:
+          type: array
+          items: {$ref: '#/components/schemas/FailedRecord'}

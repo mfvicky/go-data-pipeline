@@ -1,0 +1,41 @@
+{
+  "sources": [
+    {
+      "name": "covid",
+      "type": "csv",
+      "endpoint": "/app/testdata/input/global_covid_sample.csv",
+      "adapter": "covid_csv",
+      "field_map": {
+        "date": "Date_reported",
+        "cases": "New_cases",
+        "deaths": "New_deaths"
+      },
+      "required_fields": ["date", "cases", "deaths"]
+    },
+    {
+      "name": "bitcoin",
+      "type": "json",
+      "endpoint": "/app/testdata/input/global_coingecko_sample.json",
+      "adapter": "coingecko_market_chart",
+      "asset": "bitcoin",
+      "required_fields": ["date", "price_usd"]
+    },
+    {
+      "name": "weather",
+      "type": "json",
+      "endpoint": "/app/testdata/input/global_openmeteo_sample.json",
+      "adapter": "open_meteo_daily",
+      "required_fields": ["date", "temperature_c"]
+    }
+  ],
+  "report": {"type": "global_daily"},
+  "worker_pool_sizes": {"ingestion": 3, "validation": 5, "transformation": 5},
+  "aggregations": [
+    {"name": "cases_by_date", "operation": "sum", "field": "cases", "source_kind": "covid", "group_by": ["date"]}
+  ],
+  "exports": [
+    {"type": "json", "path": "/app/output/global_daily.json"},
+    {"type": "csv", "path": "/app/output/global_daily.csv"},
+    {"type": "postgres"}
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "sources": [
+    {
+      "name": "customers",
+      "type": "csv",
+      "endpoint": "/app/testdata/input/customers.csv",
+      "field_map": {"city_name": "city"},
+      "required_fields": ["city_name"],
+      "enrich_fields": {"feed": "customer_csv"},
+      "transform_rules": {"trim_strings": true, "lowercase_fields": ["city_name"]}
+    }
+  ],
+  "aggregations": [
+    {"name": "customers_by_city", "operation": "count", "group_by": ["city_name"]}
+  ],
+  "exports": [{"type": "json", "path": "/app/output/source_rules.json"}],
+  "worker_pool_sizes": {"ingestion": 1, "validation": 3, "transformation": 3}
+}

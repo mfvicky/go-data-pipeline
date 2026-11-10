@@ -1,0 +1,27 @@
+{
+  "sources": [
+    {
+      "name": "covid",
+      "type": "csv",
+      "endpoint": "/app/testdata/input/global_covid_sample.csv",
+      "adapter": "covid_csv",
+      "field_map": {"date": "Date_reported", "cases": "New_cases", "deaths": "New_deaths"}
+    },
+    {
+      "name": "bitcoin",
+      "type": "api",
+      "endpoint": "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=7",
+      "adapter": "coingecko_market_chart",
+      "asset": "bitcoin"
+    },
+    {
+      "name": "weather",
+      "type": "api",
+      "endpoint": "https://api.open-meteo.com/v1/forecast?latitude=28.61&longitude=77.21&daily=temperature_2m_max,temperature_2m_min&timezone=UTC&past_days=7&forecast_days=1",
+      "adapter": "open_meteo_daily"
+    }
+  ],
+  "report": {"type": "global_daily"},
+  "worker_pool_sizes": {"ingestion": 3, "validation": 5, "transformation": 5},
+  "exports": [{"type": "json", "path": "/app/output/global_daily_live.json"}, {"type": "postgres"}]
+}
